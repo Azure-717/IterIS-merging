@@ -7,7 +7,7 @@ seed: 42
 # These can be overridden in individual task configurations
 
 GLUE_t5:
-  max_iter: 8  # Reduced from 10 due to MATS acceleration
+  max_iter: 10  # Same as original; MATS may allow convergence with fewer iterations
   per_device_eval_batch_size: 16
   task_targets: ['mnli', 'cola']
   with_pretrain_matrix: 0
@@ -38,7 +38,7 @@ GLUE_t5:
   dcs_sigma: 1.0           # Temperature for DCS Gaussian kernel
 
 GLUE_bart:
-  max_iter: 8
+  max_iter: 10  # Same as original; MATS may allow convergence with fewer iterations
   per_device_eval_batch_size: 32
   task_targets: ['qqp', 'mrpc']
   with_pretrain_matrix: 0
@@ -69,7 +69,7 @@ GLUE_bart:
   dcs_sigma: 1.0
 
 EMOTION_t5_large:
-  max_iter: 16  # Reduced from 24 due to MATS acceleration
+  max_iter: 24  # Same as original; MATS may allow convergence with fewer iterations
   per_device_eval_batch_size: 8
   task_targets: ["emoint", "emotion-cause", "tec", "isear"]
   with_pretrain_matrix: 0
@@ -100,7 +100,7 @@ EMOTION_t5_large:
   dcs_sigma: 1.0
 
 TASKS_blip_base:
-  max_iter: 4  # Reduced from 6 due to MATS acceleration
+  max_iter: 6  # Same as original; MATS may allow convergence with fewer iterations
   per_device_eval_batch_size: 24
   task_targets: ['positive', 'negative']
   with_pretrain_matrix: 0

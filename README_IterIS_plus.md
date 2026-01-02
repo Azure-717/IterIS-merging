@@ -15,8 +15,8 @@ IterIS++ 是对原始 IterIS (Iterative Inference-Solving Alignment) 算法的�
 **数学形式：**
 ```
 残差定义：R_k = G(W_k) - W_k
-优化目标：min_γ ||Σ γ_j R_{k-m+j}||²  s.t. Σ γ_j = 1
-加速更新：W_{k+1} = Σ γ_j G(W_{k-m+j})
+优化目标：min_γ ||R_k - ΔR @ γ||²
+加速更新：W_{k+1} = G(W_k) - Σ γ_j (G(W_{k-m+j+1}) - G(W_{k-m+j}))
 ```
 
 ### 2. CAMR (曲率感知流形正则化)
@@ -146,9 +146,11 @@ python IterIS_plus.py --task_type GLUE_t5
 
 | 指标 | 原始 IterIS | IterIS++ | 提升 |
 |------|------------|----------|------|
-| 收敛迭代次数 | 20 | 8-10 | 50-60% ↓ |
-| 多任务干扰场景准确率 | 基线 | +3-5% | 3-5% ↑ |
-| 超参数敏感度 | 高 | 低 | 更易调优 |
+| 收敛质量 | 基线 | 更平滑 | MATS 减少震荡 |
+| 多任务干扰场景准确率 | 基线 | +3-5% | 预期提升 |
+| 超参数敏感度 | 高 | 低 | CAMR 更易调优 |
+
+**注意**: 实际性能提升取决于具体任务和数据集。建议通过消融实验验证各模块的效果。
 
 ## 🔬 理论基础
 
@@ -229,14 +231,14 @@ python IterIS_plus.py --task_type GLUE_t5 --use_mats 1 --use_camr 1 --use_dcs 1
 
 ## 📚 引用
 
-如果您使用本工作，请引用：
+如果您使用本工作，请引用原始 IterIS 论文：
 
 ```bibtex
-@article{chen2024iteris,
+@inproceedings{chen2025iteris,
   title={IterIS: Iterative Inference-Solving Alignment for LoRA Merging},
   author={Chen, Hongxu and Li, Runshi and Zhu, Bowei and Wang, Zhen and Chen, Long},
-  journal={arXiv preprint arXiv:2411.15231},
-  year={2024}
+  booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year={2025}
 }
 ```
 

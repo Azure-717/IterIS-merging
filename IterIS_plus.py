@@ -121,8 +121,8 @@ class AndersonAccelerator:
         self.G_history.append(G_W_current.clone())
         self.R_history.append(R_current.clone())
         
-        # Limit history size
-        if len(self.R_history) > self.history_size + 1:
+        # Limit history size to history_size + 1 elements
+        while len(self.R_history) > self.history_size + 1:
             self.W_history.pop(0)
             self.G_history.pop(0)
             self.R_history.pop(0)
@@ -215,12 +215,9 @@ def reg_math_camr(term, lambda_reg):
     Returns:
         Regularized matrix
     """
-    batch_size = term.shape[0]
-    result_list = []
-    for i in range(batch_size):
-        diag_reg = torch.diag(lambda_reg[i])
-        result_list.append(term[i] + diag_reg)
-    return torch.stack(result_list)
+    # Vectorized approach: create diagonal matrices and add to term
+    diag_reg = torch.diag_embed(lambda_reg)  # [batch, d, d]
+    return term + diag_reg
 
 
 # ============================================================================
@@ -273,15 +270,17 @@ def compute_feature_variance(X_list):
     This is used as a proxy for conflict when we don't have access to output variance.
     
     Args:
-        X_list: Input features [batch, N, features]
+        X_list: Input features [N, batch, features] where N is number of LoRAs
     
     Returns:
         variance: Per-sample variance [batch]
     """
     with torch.no_grad():
-        # X_list shape: [batch, N, features] where N is number of LoRAs
-        mean_features = X_list.mean(dim=1)  # [batch, features]
-        diff = X_list - mean_features.unsqueeze(1)  # [batch, N, features]
+        # X_list shape: [N, batch, features] where N is number of LoRAs
+        # Transpose to [batch, N, features] for easier computation
+        X_transposed = X_list.transpose(0, 1)  # [batch, N, features]
+        mean_features = X_transposed.mean(dim=1)  # [batch, features]
+        diff = X_transposed - mean_features.unsqueeze(1)  # [batch, N, features]
         variance = (diff ** 2).sum(dim=-1).mean(dim=1)  # [batch]
         return variance
 
@@ -320,8 +319,8 @@ def solution_matrix_plus(
     
     Args:
         W_list: LoRA weight matrices [N, out_dim, in_dim]
-        X_list: Target input features [layers, N, batch, features]
-        X_tilde_list: Current merged model features [layers, N, batch, features]
+        X_list: Target input features [N, batch, features]
+        X_tilde_list: Current merged model features [N, batch, features]
         ceof_list: Task-level coefficients
         manual_ceof: Manual weighting coefficients
         alpha_1, alpha_2: Regularization coefficients for inner products
@@ -342,15 +341,31 @@ def solution_matrix_plus(
 
         X_tilde_list = (1 - reg_ceof) * X_tilde_list + reg_ceof * X_list
         
-        # Apply sample weights if provided (DCS)
-        if sample_weights is not None:
-            # Expand weights to match feature dimensions
+        # Apply DCS sample weights if provided
+        # Weight the features by sqrt(w) so that the final weighted sum is w * (x^T x)
+        if sample_weights is not None and sample_weights.numel() > 0:
             # sample_weights shape: [batch]
-            # X_list shape: [N, batch*features/batch, features] -> need to handle carefully
-            # For simplicity, we apply weights at the matrix product level
-            sqrt_weights = torch.sqrt(sample_weights).unsqueeze(-1)  # [batch, 1]
-            # Note: This is a simplified weighting approach
-            # In full implementation, would need to reshape carefully
+            # X_list shape after transpose: [N, batch*features_dim, features]
+            # We need to weight the batch dimension
+            batch_size = sample_weights.shape[0]
+            sqrt_weights = torch.sqrt(sample_weights)  # [batch]
+            
+            # Reshape to apply weights to features
+            # Each sample's features should be weighted by sqrt(w)
+            features_per_batch = X_list.shape[1] // batch_size
+            # Check if exact division is possible (i.e., no remainder)
+            if features_per_batch > 0 and X_list.shape[1] % batch_size == 0:
+                # Reshape to [N, batch, features_per_batch, feature_dim]
+                X_list_reshaped = X_list.view(N, batch_size, features_per_batch, -1)
+                X_tilde_reshaped = X_tilde_list.view(N, batch_size, features_per_batch, -1)
+                
+                # Apply weights: [N, batch, features_per_batch, feature_dim] * [batch, 1, 1]
+                X_list_reshaped = X_list_reshaped * sqrt_weights.view(1, batch_size, 1, 1)
+                X_tilde_reshaped = X_tilde_reshaped * sqrt_weights.view(1, batch_size, 1, 1)
+                
+                # Reshape back to [N, batch*features_per_batch, feature_dim]
+                X_list = X_list_reshaped.view(N, -1, X_list_reshaped.shape[-1])
+                X_tilde_list = X_tilde_reshaped.view(N, -1, X_tilde_reshaped.shape[-1])
         
         X_X_tilde = torch.matmul(X_list.transpose(-1, -2), X_tilde_list)
         X_X_tilde_norm = torch.norm(X_X_tilde, p='fro', dim=[-2, -1]) * alpha_1
