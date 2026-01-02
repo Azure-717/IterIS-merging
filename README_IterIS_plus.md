@@ -22,9 +22,10 @@ IterIS++ 是对原始 IterIS (Iterative Inference-Solving Alignment) 算法的�
 ### 2. CAMR (曲率感知流形正则化)
 **Curvature-Aware Manifold Regularization**
 
-将各向同性正则化 (αI) 替换为基于激活协方差的曲率感知正则化：
-- 在激活方差高的方向（重要参数方向）施加较低正则化
-- 在激活方差低的方向（不重要参数方向）施加较高正则化
+将各向同性正则化 (αI) 替换为基于激活协方差的曲率感知正则化（遵循 EWC/Fisher 理论）：
+- 在激活方差高的方向（重要参数方向）施加**较高**正则化以保护重要特征
+- 在激活方差低的方向施加较低正则化
+- 支持 DCS 权重协同：高冲突样本不参与协方差计算
 - 有效防止灾难性遗忘
 
 **数学形式：**
@@ -35,15 +36,26 @@ IterIS++ 是对原始 IterIS (Iterative Inference-Solving Alignment) 算法的�
 ### 3. DCS (动态冲突感知样本加权)
 **Dynamic Conflict-aware Sample Reweighting**
 
-基于跨模型输出方差的动态样本权重：
+基于跨模型**输出空间**方差的动态样本权重（比输入特征方差更准确）：
+- 使用 W @ X 计算输出方差，更接近梯度冲突
+- 自适应 σ 参数：基于方差分布的 MAD (中位数绝对偏差) 自动调整
 - 低方差样本（任务间共识高）获得高权重
 - 高方差样本（任务间冲突大）被降权
-- 构建多任务干扰的鲁棒性屏障
+- 与 CAMR 协同：DCS 权重影响 CAMR 协方差计算
 
 **数学形式：**
 ```
-V_s = (1/N) Σ ||y_{s,i} - ȳ_s||²
+V_s = (1/N) Σ ||W_i @ x_s - mean(W @ x_s)||²
+σ_adaptive = MAD(V) × scale_factor
 w_s = exp(-V_s / σ²)
+```
+
+### 4. 收敛监控与自适应退出
+
+新增收敛检测机制，当权重变化小于阈值时自动停止迭代：
+```
+relative_change = ||W_new - W_old|| / ||W_new||
+if relative_change < threshold: early_stop
 ```
 
 ## 📦 安装
@@ -124,17 +136,18 @@ python IterIS_plus.py --task_type GLUE_t5
 | `use_mats` | bool | True | 启用 MATS (Anderson Acceleration) |
 | `mats_history_size` | int | 5 | Anderson 加速的历史深度 |
 | `mats_regularization` | float | 1e-6 | Anderson 最小二乘的正则化系数 |
-| `use_camr` | bool | True | 启用 CAMR (曲率感知正则化) |
+| `use_camr` | bool | True | 启用 CAMR (曲率感知正则化，EWC对齐) |
 | `camr_alpha` | float | 与 alpha_1 相同 | CAMR 正则化强度 |
 | `camr_beta` | float | 1e-8 | CAMR 最小正则化值 |
-| `use_dcs` | bool | True | 启用 DCS (动态样本加权) |
-| `dcs_sigma` | float | 1.0 | DCS 高斯核温度参数 |
+| `use_dcs` | bool | True | 启用 DCS (动态样本加权，使用输出方差) |
+| `dcs_sigma` | float | 1.0 | 自适应 σ 的缩放因子 |
+| `convergence_threshold` | float | 1e-6 | 收敛检测阈值，用于自适应退出 |
 
 ### 继承自 IterIS 的参数
 
 | 参数 | 描述 |
 |------|------|
-| `max_iter` | 最大迭代次数（IterIS++ 由于 MATS 可减少约 50%）|
+| `max_iter` | 最大迭代次数（配合收敛检测可自动提前退出）|
 | `task_targets` | 要合并的任务列表 |
 | `model_name` | 基础模型名称 |
 | `lora_alpha` | LoRA 的 alpha 值 |
@@ -144,11 +157,14 @@ python IterIS_plus.py --task_type GLUE_t5
 
 ## 📊 预期性能提升
 
-| 指标 | 原始 IterIS | IterIS++ | 提升 |
-|------|------------|----------|------|
+| 指标 | 原始 IterIS | IterIS++ | 改进说明 |
+|------|------------|----------|---------|
 | 收敛质量 | 基线 | 更平滑 | MATS 减少震荡 |
-| 多任务干扰场景准确率 | 基线 | +3-5% | 预期提升 |
-| 超参数敏感度 | 高 | 低 | CAMR 更易调优 |
+| 收敛速度 | 基线 | 可提前退出 | 收敛检测机制 |
+| 多任务冲突处理 | 特征方差 | 输出方差 | DCS 更精确的冲突代理 |
+| 正则化对齐 | 各向同性 | EWC对齐 | CAMR 保护重要方向 |
+| 超参数敏感度 | σ 固定 | σ 自适应 | DCS 自动调整 |
+| 模块协同 | 独立运行 | 权重传递 | DCS→CAMR 协同 |
 
 **注意**: 实际性能提升取决于具体任务和数据集。建议通过消融实验验证各模块的效果。
 

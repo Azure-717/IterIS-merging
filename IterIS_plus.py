@@ -169,22 +169,46 @@ class AndersonAccelerator:
 # CAMR: Curvature-Aware Manifold Regularization
 # ============================================================================
 
-def compute_camr_regularization(X_tilde_list, alpha, beta=1e-8):
+def compute_camr_regularization(X_tilde_list, alpha, beta=1e-8, sample_weights=None):
     """
     Compute curvature-aware regularization matrix based on input covariance.
     
     This replaces the isotropic regularization alpha*I with a diagonal matrix
     that reflects the geometry of the parameter space based on activation statistics.
     
+    Following EWC/Fisher theory: high-variance directions correspond to important
+    features and should receive HIGHER regularization to protect them.
+    
     Args:
         X_tilde_list: Input features from the merged model [batch, features]
         alpha: Base regularization strength
         beta: Minimum regularization value for numerical stability
+        sample_weights: Optional DCS weights for weighted covariance [batch]
     
     Returns:
         Lambda_reg: Diagonal regularization matrix
     """
     with torch.no_grad():
+        # Apply sample weights if provided (module coordination with DCS)
+        if sample_weights is not None and sample_weights.numel() > 0:
+            # Weight the features before computing covariance
+            batch_size = sample_weights.shape[0]
+            # Ensure tensor has at least 3 dimensions
+            if X_tilde_list.dim() >= 3 and X_tilde_list.shape[1] % batch_size == 0:
+                features_per_batch = X_tilde_list.shape[1] // batch_size
+                feature_dim = X_tilde_list.shape[-1]
+                X_reshaped = X_tilde_list.view(X_tilde_list.shape[0], batch_size, features_per_batch, feature_dim)
+                sqrt_weights = torch.sqrt(sample_weights).view(1, batch_size, 1, 1)
+                X_weighted = X_reshaped * sqrt_weights
+                X_tilde_list = X_weighted.view(X_tilde_list.shape[0], -1, feature_dim)
+            elif X_tilde_list.dim() < 3:
+                # Not enough dimensions for sample weighting
+                pass
+            else:
+                # Dimension mismatch - log warning and skip sample weighting for CAMR
+                print(f"[CAMR Warning] Dimension mismatch: X_tilde_list.shape[1]={X_tilde_list.shape[1]} "
+                      f"not divisible by batch_size={batch_size}. Skipping DCS-CAMR coordination.")
+        
         # Compute covariance of activations: C = X^T X
         # X_tilde_list shape: [layers, batch, features]
         covariance = torch.matmul(X_tilde_list.transpose(-1, -2), X_tilde_list)
@@ -195,11 +219,10 @@ def compute_camr_regularization(X_tilde_list, alpha, beta=1e-8):
         # Normalize to create relative importance weights
         diag_norm = diag_cov / (diag_cov.sum(dim=-1, keepdim=True) + 1e-10)
         
-        # Create regularization weights: higher variance = more important = less regularization
-        # We invert this: higher activation variance means the direction is "used more"
-        # so we want to preserve it (lower regularization in that direction)
-        # Lambda_reg = alpha * (1 - normalize(diag)) + beta
-        Lambda_reg = alpha * (1.0 - diag_norm) + beta
+        # EWC/Fisher-aligned regularization:
+        # High variance directions = important features = need protection = HIGH regularization
+        # This follows the principle that Fisher Information ≈ activation covariance expectation
+        Lambda_reg = alpha * diag_norm + beta
         
     return Lambda_reg
 
@@ -283,6 +306,65 @@ def compute_feature_variance(X_list):
         diff = X_transposed - mean_features.unsqueeze(1)  # [batch, N, features]
         variance = (diff ** 2).sum(dim=-1).mean(dim=1)  # [batch]
         return variance
+
+
+def compute_output_variance(W_list, X_list):
+    """
+    Compute variance of outputs (W @ X) across different LoRA models.
+    
+    This is a more accurate proxy for gradient conflict than input feature variance,
+    as it captures differences in the actual transformations applied by each LoRA.
+    
+    Args:
+        W_list: LoRA weight matrices [N, out_dim, in_dim]
+        X_list: Input features [N, batch, features]
+    
+    Returns:
+        variance: Per-sample output variance [batch]
+    """
+    with torch.no_grad():
+        N = W_list.shape[0]
+        # Compute outputs for each LoRA: Y_i = W_i @ X_i^T
+        # X_list shape: [N, batch, features], W_list shape: [N, out_dim, in_dim]
+        # We compute the output norm difference across LoRAs
+        
+        # For each LoRA, compute output: [N, batch, out_dim]
+        outputs = torch.matmul(X_list, W_list.transpose(-1, -2))  # [N, batch, out_dim]
+        
+        # Transpose to [batch, N, out_dim]
+        outputs_transposed = outputs.transpose(0, 1)
+        
+        # Compute mean output across LoRAs
+        mean_output = outputs_transposed.mean(dim=1)  # [batch, out_dim]
+        
+        # Compute variance
+        diff = outputs_transposed - mean_output.unsqueeze(1)  # [batch, N, out_dim]
+        variance = (diff ** 2).sum(dim=-1).mean(dim=1)  # [batch]
+        
+        return variance
+
+
+def compute_adaptive_sigma(variance, scale_factor=1.0):
+    """
+    Compute adaptive sigma based on variance distribution.
+    
+    This avoids the need for manual tuning of the sigma parameter by
+    adapting it to the actual variance distribution of the data.
+    
+    Args:
+        variance: Per-sample variance tensor [batch]
+        scale_factor: Scaling factor for the adaptive sigma
+    
+    Returns:
+        sigma: Adaptive sigma value
+    """
+    with torch.no_grad():
+        # Use median absolute deviation (more robust than std)
+        median_var = torch.median(variance)
+        mad = torch.median(torch.abs(variance - median_var))
+        # Scale factor to approximate std from MAD
+        sigma = (mad * 1.4826 + 1e-8) * scale_factor
+        return sigma.item()
 
 
 # ============================================================================
@@ -374,8 +456,9 @@ def solution_matrix_plus(
         X_tilde_X_tilde = torch.matmul(X_tilde_list.transpose(-1, -2), X_tilde_list)
         
         # Apply CAMR regularization if enabled
+        # Pass sample_weights for module coordination (DCS weights influence CAMR covariance)
         if use_camr:
-            Lambda_reg = compute_camr_regularization(X_tilde_list, camr_alpha, camr_beta)
+            Lambda_reg = compute_camr_regularization(X_tilde_list, camr_alpha, camr_beta, sample_weights)
             X_tilde_X_tilde = reg_math_camr(X_tilde_X_tilde, Lambda_reg)
         else:
             X_tilde_X_tilde_norm = torch.norm(X_tilde_X_tilde, p='fro', dim=[-2, -1]) * alpha_2
@@ -418,6 +501,7 @@ def update_param_plus(
     camr_beta=1e-8,
     use_dcs=True,
     dcs_sigma=1.0,
+    convergence_threshold=1e-6,  # For early stopping
     **generation_kwargs,
 ):
     """
@@ -431,6 +515,7 @@ def update_param_plus(
        - DCS: Compute sample weights based on output variance
        - Solving: Weighted least squares with CAMR regularization
        - MATS: Anderson acceleration on the weight updates
+       - Convergence check for early stopping
     
     Args:
         seed: Random seed
@@ -447,7 +532,8 @@ def update_param_plus(
         camr_alpha: CAMR regularization strength
         camr_beta: CAMR minimum regularization
         use_dcs: Enable DCS (Dynamic Sample Weighting)
-        dcs_sigma: Temperature for DCS Gaussian kernel
+        dcs_sigma: Scale factor for adaptive DCS sigma
+        convergence_threshold: Threshold for early stopping based on weight change
         **generation_kwargs: Additional generation arguments
     
     Returns:
@@ -460,6 +546,7 @@ def update_param_plus(
     print(f"  - MATS (Anderson Acceleration): {use_mats}")
     print(f"  - CAMR (Curvature-Aware Reg.): {use_camr}")
     print(f"  - DCS (Dynamic Sample Weight): {use_dcs}")
+    print(f"  - Convergence threshold: {convergence_threshold}")
     print("=" * 60)
     
     # Get all mid-features from each LoRA model
@@ -521,12 +608,19 @@ def update_param_plus(
                 ceof_list = torch.norm(merge_W, p='fro', dim=[-2, -1]) ** 2 / \
                             torch.sum(torch.norm(torch.matmul(X_list, merge_W.transpose(1, 2)), p='fro', dim=[-2, -1]) ** 2, dim=0)
                 
-                # DCS: Compute sample weights based on feature variance
+                # DCS: Compute sample weights based on output variance
+                # Using output variance (W @ X) provides a more accurate proxy for gradient conflict
+                # than input feature variance alone
                 sample_weights = None
                 if use_dcs:
-                    # Use feature variance as proxy for conflict
-                    feature_variance = compute_feature_variance(X_list.transpose(0, 1))
-                    sample_weights = torch.exp(-feature_variance / (dcs_sigma ** 2 + 1e-10))
+                    # Use output variance for better conflict detection
+                    output_variance = compute_output_variance(W_list, X_list.transpose(0, 1))
+                    
+                    # Use adaptive sigma based on variance distribution (more robust than fixed sigma)
+                    effective_sigma = compute_adaptive_sigma(output_variance, scale_factor=dcs_sigma)
+                    
+                    # Compute sample weights using Gaussian kernel
+                    sample_weights = torch.exp(-output_variance / (effective_sigma ** 2 + 1e-10))
                     sample_weights = sample_weights / (sample_weights.mean() + 1e-10)
                 
                 X_tilde = X_list if iteration == 0 else X_tilde_dict[idx].to('cuda')
@@ -562,7 +656,22 @@ def update_param_plus(
                 torch.cuda.empty_cache()
                 gc.collect()
         
-        # Store current weights for next iteration's MATS
+        # Convergence check: compute total weight change (before storing new weights)
+        converged = False
+        if iteration > 0 and convergence_threshold > 0 and prev_tar_lora_list:
+            total_change = 0.0
+            total_norm = 0.0
+            for k, v in tar_lora_list.items():
+                if k in prev_tar_lora_list:
+                    total_change += torch.norm(v - prev_tar_lora_list[k]).item()
+                    total_norm += torch.norm(v).item()
+            relative_change = total_change / (total_norm + 1e-10)
+            print(f"Weight relative change: {relative_change:.2e}")
+            if relative_change < convergence_threshold:
+                print(f"✓ Converged at iteration {iteration + 1} (relative change {relative_change:.2e} < {convergence_threshold})")
+                converged = True
+        
+        # Store current weights for next iteration's MATS (after convergence check)
         prev_tar_lora_list = {k: v.clone() for k, v in tar_lora_list.items()}
         
         print("Calculation Done!")
@@ -597,9 +706,13 @@ def update_param_plus(
         max_memory = torch.cuda.max_memory_allocated()
         print(f"Max memory usage: {max_memory / 1024 ** 2:.2f} MB", flush=True)
         
-        if iteration == max_iter - 1:
+        # Check for convergence or max iterations reached
+        if iteration == max_iter - 1 or converged:
             print("\n" + "=" * 60)
-            print("IterIS++ Algorithm Complete")
+            if converged:
+                print(f"IterIS++ Algorithm Complete (Early Stopped at iteration {iteration + 1})")
+            else:
+                print("IterIS++ Algorithm Complete")
             print("=" * 60)
             return model
         
@@ -715,6 +828,7 @@ def main():
         camr_beta=config_data[task_type].get('camr_beta', 1e-8),
         use_dcs=use_dcs,
         dcs_sigma=config_data[task_type].get('dcs_sigma', 1.0),
+        convergence_threshold=config_data[task_type].get('convergence_threshold', 1e-6),
     )
     
     if save == 1:

@@ -32,10 +32,11 @@ GLUE_t5:
   mats_history_size: 5     # Number of historical iterations to use
   mats_regularization: 1e-6  # Regularization for Anderson least squares
   use_camr: True           # Enable CAMR (Curvature-Aware Regularization)
-  camr_alpha: 0.0000001    # CAMR regularization strength
+  camr_alpha: 0.0000001    # CAMR regularization strength (EWC-aligned: high variance = high reg)
   camr_beta: 1e-8          # CAMR minimum regularization
   use_dcs: True            # Enable DCS (Dynamic Sample Weighting)
-  dcs_sigma: 1.0           # Temperature for DCS Gaussian kernel
+  dcs_sigma: 1.0           # Scale factor for adaptive DCS sigma (multiplier for MAD-based sigma)
+  convergence_threshold: 1e-6  # Threshold for early stopping based on relative weight change
 
 GLUE_bart:
   max_iter: 10  # Same as original; MATS may allow convergence with fewer iterations
@@ -67,6 +68,7 @@ GLUE_bart:
   camr_beta: 1e-8
   use_dcs: True
   dcs_sigma: 1.0
+  convergence_threshold: 1e-6
 
 EMOTION_t5_large:
   max_iter: 24  # Same as original; MATS may allow convergence with fewer iterations
@@ -98,6 +100,7 @@ EMOTION_t5_large:
   camr_beta: 1e-8
   use_dcs: True
   dcs_sigma: 1.0
+  convergence_threshold: 1e-6
 
 TASKS_blip_base:
   max_iter: 6  # Same as original; MATS may allow convergence with fewer iterations
@@ -130,3 +133,4 @@ TASKS_blip_base:
   camr_beta: 1e-8
   use_dcs: True
   dcs_sigma: 1.0
+  convergence_threshold: 1e-6
