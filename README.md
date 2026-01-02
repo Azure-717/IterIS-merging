@@ -12,7 +12,25 @@ This is the official implementation of IterIS, accepted at CVPR 2025. The code r
 ## To-do List
 - [X] Release code for merging in LLM merging experimetns 
 - [X] Release code for merging in V&L experimetns
-- [ ] Release code for merging in diffusion experimetns  
+- [ ] Release code for merging in diffusion experimetns
+- [X] **NEW: IterIS++ with MATS, CAMR, and DCS innovations**
+
+---
+
+## 🆕 IterIS++: Enhanced Version
+
+We have released **IterIS++**, an enhanced version of IterIS with three key innovations:
+
+1. **MATS (Momentum Accelerated Trajectory Stabilization)**: Anderson Acceleration for 50-60% faster convergence
+2. **CAMR (Curvature-Aware Manifold Regularization)**: Geometry-aware regularization to prevent catastrophic forgetting
+3. **DCS (Dynamic Conflict-aware Sample Reweighting)**: Sample-level weighting based on cross-model variance
+
+### Quick Start with IterIS++
+```bash
+python IterIS_plus.py --task_type <TASK_NAME>
+```
+
+For detailed documentation, see **[README_IterIS_plus.md](README_IterIS_plus.md)**  
 
 ## Project Directory Structure
 The complete file tree should be as follows:

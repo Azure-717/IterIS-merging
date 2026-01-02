@@ -1,0 +1,132 @@
+# IterIS++ Configuration File
+# Enhanced LoRA merging with MATS, CAMR, and DCS innovations
+
+seed: 42
+
+# IterIS++ Global Settings (apply to all task types)
+# These can be overridden in individual task configurations
+
+GLUE_t5:
+  max_iter: 8  # Reduced from 10 due to MATS acceleration
+  per_device_eval_batch_size: 16
+  task_targets: ['mnli', 'cola']
+  with_pretrain_matrix: 0
+  model_name: "google/flan-t5-base"
+  max_length: 256
+  lora_alpha: [32, 32]
+  manual_ceof: [1, 1]
+  alpha_1: 0.0000001
+  alpha_2: 0.0000001
+  reg_ceof: 0.0
+  rank: 8
+  select_long: 1
+  samples_num: 50
+  if_divide: False
+  if_balance: True
+  shuffle: True
+  inner_num: 4
+  outer_num: 5
+  save: 0
+  # IterIS++ specific parameters
+  use_mats: True           # Enable MATS (Anderson Acceleration)
+  mats_history_size: 5     # Number of historical iterations to use
+  mats_regularization: 1e-6  # Regularization for Anderson least squares
+  use_camr: True           # Enable CAMR (Curvature-Aware Regularization)
+  camr_alpha: 0.0000001    # CAMR regularization strength
+  camr_beta: 1e-8          # CAMR minimum regularization
+  use_dcs: True            # Enable DCS (Dynamic Sample Weighting)
+  dcs_sigma: 1.0           # Temperature for DCS Gaussian kernel
+
+GLUE_bart:
+  max_iter: 8
+  per_device_eval_batch_size: 32
+  task_targets: ['qqp', 'mrpc']
+  with_pretrain_matrix: 0
+  model_name: "facebook/bart-base"
+  max_length: 256
+  lora_alpha: [32, 32]
+  manual_ceof: [1, 1]
+  select_long: 1
+  samples_num: 50
+  alpha_1: 0.0001
+  alpha_2: 0.0001
+  reg_ceof: 0.0
+  rank: 8
+  if_divide: False
+  if_balance: True
+  shuffle: True
+  inner_num: 2
+  outer_num: 5
+  save: 0
+  # IterIS++ specific parameters
+  use_mats: True
+  mats_history_size: 5
+  mats_regularization: 1e-6
+  use_camr: True
+  camr_alpha: 0.0001
+  camr_beta: 1e-8
+  use_dcs: True
+  dcs_sigma: 1.0
+
+EMOTION_t5_large:
+  max_iter: 16  # Reduced from 24 due to MATS acceleration
+  per_device_eval_batch_size: 8
+  task_targets: ["emoint", "emotion-cause", "tec", "isear"]
+  with_pretrain_matrix: 0
+  model_name: "google/flan-t5-large"
+  max_length: 100
+  lora_alpha: [32, 32, 32, 32]
+  manual_ceof: [1, 1, 1, 1]
+  select_long: 1
+  alpha_1: 0.00008
+  alpha_2: 0.00008
+  reg_ceof: 0.0000
+  rank: 8
+  samples_num: 60
+  if_divide: True
+  if_balance: True
+  shuffle: True
+  inner_num: 6
+  outer_num: 10
+  save: 0
+  # IterIS++ specific parameters
+  use_mats: True
+  mats_history_size: 5
+  mats_regularization: 1e-6
+  use_camr: True
+  camr_alpha: 0.00008
+  camr_beta: 1e-8
+  use_dcs: True
+  dcs_sigma: 1.0
+
+TASKS_blip_base:
+  max_iter: 4  # Reduced from 6 due to MATS acceleration
+  per_device_eval_batch_size: 24
+  task_targets: ['positive', 'negative']
+  with_pretrain_matrix: 0
+  model_name: "Salesforce/blip-image-captioning-base"
+  max_length: 168
+  max_new_tokens: 42
+  lora_alpha: [32, 32]
+  manual_ceof: [1, 1]
+  select_long: 1
+  alpha_1: 0.0000008
+  alpha_2: 0.0000008
+  reg_ceof: 0.0
+  rank: 32
+  samples_num: 50
+  if_divide: False
+  if_balance: False
+  shuffle: True
+  inner_num: 2
+  outer_num: 4
+  save: 0
+  # IterIS++ specific parameters
+  use_mats: True
+  mats_history_size: 5
+  mats_regularization: 1e-6
+  use_camr: True
+  camr_alpha: 0.0000008
+  camr_beta: 1e-8
+  use_dcs: True
+  dcs_sigma: 1.0
