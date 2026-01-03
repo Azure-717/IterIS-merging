@@ -176,8 +176,12 @@ def compute_camr_regularization(X_tilde_list, alpha, beta=1e-8, sample_weights=N
     This replaces the isotropic regularization alpha*I with a diagonal matrix
     that reflects the geometry of the parameter space based on activation statistics.
     
-    Following EWC/Fisher theory: high-variance directions correspond to important
-    features and should receive HIGHER regularization to protect them.
+    Ridge Regression Principle for Closed-Form Solving:
+    - High variance directions = good signal = stable inversion = LESS regularization needed
+    - Low variance directions = near-singular = need regularization for numerical stability
+    
+    This is different from EWC/Fisher in SGD fine-tuning where you protect important directions.
+    In closed-form solving, we regularize where the data is WEAK, not where it's strong.
     
     Args:
         X_tilde_list: Input features from the merged model [batch, features]
@@ -219,10 +223,11 @@ def compute_camr_regularization(X_tilde_list, alpha, beta=1e-8, sample_weights=N
         # Normalize to create relative importance weights
         diag_norm = diag_cov / (diag_cov.sum(dim=-1, keepdim=True) + 1e-10)
         
-        # EWC/Fisher-aligned regularization:
-        # High variance directions = important features = need protection = HIGH regularization
-        # This follows the principle that Fisher Information ≈ activation covariance expectation
-        Lambda_reg = alpha * diag_norm + beta
+        # Ridge Regression-aligned regularization for closed-form solving:
+        # High variance = strong signal = stable inversion = LESS regularization
+        # Low variance = weak signal = near-singular = MORE regularization
+        # Lambda_reg = alpha * (1 - normalized_variance) + beta
+        Lambda_reg = alpha * (1.0 - diag_norm) + beta
         
     return Lambda_reg
 
