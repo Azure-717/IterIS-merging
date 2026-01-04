@@ -329,9 +329,10 @@ def compute_output_variance(W_list, X_list):
     This is a more accurate proxy for gradient conflict than input feature variance,
     as it captures differences in the actual transformations applied by each LoRA.
     
-    The variance is computed per-sample (per batch element), aggregating across
-    all sequence positions. This ensures samples with high cross-model disagreement
-    are down-weighted as a whole.
+    The variance is computed per-sample (per batch element) by first calculating
+    per-position variance, then averaging across all sequence positions. Samples 
+    with high cross-model disagreement (high variance) will be down-weighted in
+    the DCS algorithm to reduce their influence during merging.
     
     Args:
         W_list: LoRA weight matrices [N, out_dim, in_dim]
@@ -339,7 +340,8 @@ def compute_output_variance(W_list, X_list):
     
     Returns:
         variance: Per-sample output variance with shape [batch].
-                  For 4D input, sequence positions are aggregated into sample-level variance.
+                  For 4D input, sequence positions are aggregated by mean averaging
+                  across the sequence dimension.
     """
     with torch.no_grad():
         N = W_list.shape[0]
@@ -659,8 +661,9 @@ def update_param_plus(
                     output_variance = compute_output_variance(W_list, X_list.transpose(0, 1))
                     
                     # Log DCS statistics on first layer of first iteration for debugging
-                    if iteration == 0 and idx == list(X_dict.keys())[0]:
-                        print(f"[DCS] Sample variance stats - min: {output_variance.min().item():.4e}, "
+                    first_layer_key = next(iter(X_dict.keys()))
+                    if iteration == 0 and idx == first_layer_key:
+                        logging.info(f"[DCS] Sample variance stats - min: {output_variance.min().item():.4e}, "
                               f"max: {output_variance.max().item():.4e}, "
                               f"mean: {output_variance.mean().item():.4e}, "
                               f"shape: {output_variance.shape}")
@@ -669,13 +672,14 @@ def update_param_plus(
                     effective_sigma = compute_adaptive_sigma(output_variance, scale_factor=dcs_sigma)
                     
                     # Compute sample weights using Gaussian kernel
+                    # Higher variance (cross-model disagreement) → lower weight (down-weighted)
                     sample_weights = torch.exp(-output_variance / (effective_sigma ** 2 + 1e-10))
                     sample_weights = sample_weights / (sample_weights.mean() + 1e-10)
                     
                     # Log DCS weight statistics on first layer of first iteration
-                    if iteration == 0 and idx == list(X_dict.keys())[0]:
-                        print(f"[DCS] Effective sigma: {effective_sigma:.4e}")
-                        print(f"[DCS] Sample weights stats - min: {sample_weights.min().item():.4f}, "
+                    if iteration == 0 and idx == first_layer_key:
+                        logging.info(f"[DCS] Effective sigma: {effective_sigma:.4e}")
+                        logging.info(f"[DCS] Sample weights stats - min: {sample_weights.min().item():.4f}, "
                               f"max: {sample_weights.max().item():.4f}, "
                               f"std: {sample_weights.std().item():.4f}")
                 
