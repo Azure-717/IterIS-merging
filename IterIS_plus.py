@@ -601,7 +601,7 @@ def solution_matrix_plus(
             else:
                 # Dimension mismatch - log warning and skip weighting
                 # This is a fallback; proper alignment should be ensured upstream
-                print(f"[DCS Warning] Weight dimension mismatch: features={num_features_total}, "
+                logging.warning(f"[DCS] Weight dimension mismatch: features={num_features_total}, "
                       f"weights={num_samples}. Skipping sample weighting.")
         
         X_X_tilde = torch.matmul(X_list.transpose(-1, -2), X_tilde_list)
@@ -803,7 +803,7 @@ def update_param_plus(
                     # Log DCS statistics on first layer of first iteration for debugging
                     first_layer_key = next(iter(X_dict.keys()))
                     if iteration == 0 and idx == first_layer_key:
-                        print(f"[DCS] Sample variance stats - min: {output_variance.min().item():.4e}, "
+                        logging.info(f"[DCS] Sample variance stats - min: {output_variance.min().item():.4e}, "
                               f"max: {output_variance.max().item():.4e}, "
                               f"mean: {output_variance.mean().item():.4e}, "
                               f"shape: {output_variance.shape}")
@@ -827,8 +827,8 @@ def update_param_plus(
                     
                     # Log DCS weight statistics on first layer of first iteration
                     if iteration == 0 and idx == first_layer_key:
-                        print(f"[DCS] Warmup factor: {warmup_factor:.2f}, Effective scale: {effective_scale:.4f}")
-                        print(f"[DCS] Sample weights stats - min: {sample_weights.min().item():.4f}, "
+                        logging.info(f"[DCS] Warmup factor: {warmup_factor:.2f}, Effective scale: {effective_scale:.4f}")
+                        logging.info(f"[DCS] Sample weights stats - min: {sample_weights.min().item():.4f}, "
                               f"max: {sample_weights.max().item():.4f}, "
                               f"std: {sample_weights.std().item():.4f}, "
                               f"mean: {sample_weights.mean().item():.4f}")
