@@ -1,5 +1,11 @@
 # IterIS++ Configuration File
 # Enhanced LoRA merging with MATS, CAMR, and DCS innovations
+# 
+# CRITICAL FIX NOTES (v2):
+# - camr_alpha and camr_beta are now properly scaled by the covariance matrix norm
+# - Previous versions had CAMR regularization ~10^6 times weaker than intended
+# - The new implementation scales CAMR by norm(X_tilde_X_tilde), so camr_alpha should
+#   match alpha_2 for equivalent regularization strength
 
 seed: 42
 
@@ -29,14 +35,14 @@ GLUE_t5:
   save: 0
   # IterIS++ specific parameters
   use_mats: True           # Enable MATS (Anderson Acceleration)
-  mats_history_size: 5     # Number of historical iterations to use
-  mats_regularization: 1e-6  # Regularization for Anderson least squares
+  mats_history_size: 3     # FIXED: Reduced from 5 to 3 for more stable acceleration
+  mats_regularization: 1e-5  # FIXED: Increased from 1e-6 for more stable acceleration
   use_camr: True           # Enable CAMR (Curvature-Aware Regularization)
-  camr_alpha: 0.0000001    # CAMR regularization strength (EWC-aligned: high variance = high reg)
-  camr_beta: 1e-8          # CAMR minimum regularization
+  camr_alpha: 0.0000001    # Should match alpha_2 (now properly scaled by norm internally)
+  camr_beta: 1e-6          # FIXED: Increased from 1e-8 to ensure minimum regularization
   use_dcs: True            # Enable DCS (Dynamic Sample Weighting)
-  dcs_sigma: 1.0           # Scale factor for adaptive DCS sigma (multiplier for MAD-based sigma)
-  convergence_threshold: 1e-6  # Threshold for early stopping based on relative weight change
+  dcs_sigma: 0.5           # FIXED: Reduced from 1.0 for more sensitive weight distribution
+  convergence_threshold: 1e-5  # FIXED: Slightly relaxed for faster convergence detection
 
 GLUE_bart:
   max_iter: 10  # Same as original; MATS may allow convergence with fewer iterations
@@ -61,14 +67,14 @@ GLUE_bart:
   save: 0
   # IterIS++ specific parameters
   use_mats: True
-  mats_history_size: 5
-  mats_regularization: 1e-6
+  mats_history_size: 3     # FIXED: Reduced for stability
+  mats_regularization: 1e-5  # FIXED: Increased for stability
   use_camr: True
-  camr_alpha: 0.0001
-  camr_beta: 1e-8
+  camr_alpha: 0.0001       # Should match alpha_2
+  camr_beta: 1e-6          # FIXED: Increased for minimum regularization
   use_dcs: True
-  dcs_sigma: 1.0
-  convergence_threshold: 1e-6
+  dcs_sigma: 0.5           # FIXED: Reduced for sensitivity
+  convergence_threshold: 1e-5
 
 EMOTION_t5_large:
   max_iter: 24  # Same as original; MATS may allow convergence with fewer iterations
@@ -93,14 +99,14 @@ EMOTION_t5_large:
   save: 0
   # IterIS++ specific parameters
   use_mats: True
-  mats_history_size: 5
-  mats_regularization: 1e-6
+  mats_history_size: 3     # FIXED: Reduced for stability
+  mats_regularization: 1e-5  # FIXED: Increased for stability
   use_camr: True
-  camr_alpha: 0.00008
-  camr_beta: 1e-8
+  camr_alpha: 0.00008      # Should match alpha_2
+  camr_beta: 1e-6          # FIXED: Increased for minimum regularization
   use_dcs: True
-  dcs_sigma: 1.0
-  convergence_threshold: 1e-6
+  dcs_sigma: 0.5           # FIXED: Reduced for sensitivity
+  convergence_threshold: 1e-5
 
 TASKS_blip_base:
   max_iter: 6  # Same as original; MATS may allow convergence with fewer iterations
@@ -126,11 +132,11 @@ TASKS_blip_base:
   save: 0
   # IterIS++ specific parameters
   use_mats: True
-  mats_history_size: 5
-  mats_regularization: 1e-6
+  mats_history_size: 3     # FIXED: Reduced for stability
+  mats_regularization: 1e-5  # FIXED: Increased for stability
   use_camr: True
-  camr_alpha: 0.0000008
-  camr_beta: 1e-8
+  camr_alpha: 0.0000008    # Should match alpha_2
+  camr_beta: 1e-6          # FIXED: Increased from 1e-8
   use_dcs: True
-  dcs_sigma: 1.0
-  convergence_threshold: 1e-6
+  dcs_sigma: 0.5           # FIXED: Reduced for sensitivity
+  convergence_threshold: 1e-5

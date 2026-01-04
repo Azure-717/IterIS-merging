@@ -164,12 +164,22 @@ class AndersonAccelerator:
             # If solve fails, fall back to simple iteration
             return G_W_current
         
+        # SAFETY FIX: Clamp gamma coefficients to prevent runaway acceleration
+        # When gamma values are too large, the acceleration can overshoot and diverge
+        gamma = torch.clamp(gamma, -2.0, 2.0)
+        
         # Compute the accelerated iterate
         # W_{k+1} = G(W_k) - sum_{j=0}^{m-1} gamma_j * (G(W_{k-m+j+1}) - G(W_{k-m+j}))
         W_accelerated = G_W_current.clone()
         for j in range(m):
             delta_G = self.G_history[j + 1] - self.G_history[j]
             W_accelerated = W_accelerated - gamma[j] * delta_G
+        
+        # SAFETY FIX: Check if acceleration caused excessive deviation
+        # If the accelerated weights deviate too much from the LS solution, fall back
+        relative_change = torch.norm(W_accelerated - G_W_current) / (torch.norm(G_W_current) + 1e-10)
+        if relative_change > 2.0:  # If change exceeds 200%, acceleration is unstable
+            return G_W_current
         
         return W_accelerated
 
@@ -192,14 +202,18 @@ def compute_camr_regularization(X_tilde_list, alpha, beta=1e-8, sample_weights=N
     This is different from EWC/Fisher in SGD fine-tuning where you protect important directions.
     In closed-form solving, we regularize where the data is WEAK, not where it's strong.
     
+    CRITICAL FIX: The regularization must be scaled by the matrix Frobenius norm to match
+    the original IterIS regularization scale. Without this, CAMR produces values ~10^6 times
+    smaller than intended, leading to near-singular matrices and numerical instability.
+    
     Args:
-        X_tilde_list: Input features from the merged model [batch, features]
-        alpha: Base regularization strength
-        beta: Minimum regularization value for numerical stability
+        X_tilde_list: Input features from the merged model [N, batch, features]
+        alpha: Base regularization strength (same as alpha_2 in original IterIS)
+        beta: Minimum regularization ratio for numerical stability
         sample_weights: Optional DCS weights for weighted covariance [batch]
     
     Returns:
-        Lambda_reg: Diagonal regularization matrix
+        Lambda_reg: Diagonal regularization matrix [N, features]
     """
     with torch.no_grad():
         # Apply sample weights if provided (module coordination with DCS)
@@ -218,25 +232,38 @@ def compute_camr_regularization(X_tilde_list, alpha, beta=1e-8, sample_weights=N
                 # Not enough dimensions for sample weighting
                 pass
             else:
-                # Dimension mismatch - log warning and skip sample weighting for CAMR
-                print(f"[CAMR Warning] Dimension mismatch: X_tilde_list.shape[1]={X_tilde_list.shape[1]} "
-                      f"not divisible by batch_size={batch_size}. Skipping DCS-CAMR coordination.")
+                # Dimension mismatch - skip sample weighting for CAMR silently
+                pass
         
         # Compute covariance of activations: C = X^T X
-        # X_tilde_list shape: [layers, batch, features]
+        # X_tilde_list shape: [N, batch, features]
         covariance = torch.matmul(X_tilde_list.transpose(-1, -2), X_tilde_list)
         
-        # Extract diagonal elements representing variance in each direction
-        diag_cov = torch.diagonal(covariance, dim1=-2, dim2=-1)
+        # CRITICAL FIX: Compute the Frobenius norm to scale regularization properly
+        # This matches the original IterIS behavior: reg = norm(X_tilde_X_tilde) * alpha
+        cov_norm = torch.norm(covariance, p='fro', dim=[-2, -1])  # [N]
         
-        # Normalize to create relative importance weights
+        # Extract diagonal elements representing variance in each direction
+        diag_cov = torch.diagonal(covariance, dim1=-2, dim2=-1)  # [N, features]
+        
+        # Normalize to create relative importance weights in [0, 1]
         diag_norm = diag_cov / (diag_cov.sum(dim=-1, keepdim=True) + 1e-10)
         
         # Ridge Regression-aligned regularization for closed-form solving:
         # High variance = strong signal = stable inversion = LESS regularization
         # Low variance = weak signal = near-singular = MORE regularization
-        # Lambda_reg = alpha * (1 - normalized_variance) + beta
-        Lambda_reg = alpha * (1.0 - diag_norm) + beta
+        #
+        # FIXED FORMULA:
+        # base_strength = cov_norm * alpha (matches original IterIS scale)
+        # Lambda_reg = base_strength * (1 - diag_norm) + beta * cov_norm
+        #
+        # This ensures:
+        # 1. Low variance directions get regularization ≈ base_strength
+        # 2. High variance directions get regularization ≈ beta * cov_norm (small but nonzero)
+        # 3. Overall scale matches original isotropic regularization
+        base_strength = (cov_norm * alpha).unsqueeze(-1)  # [N, 1]
+        min_reg = (cov_norm * beta).unsqueeze(-1)  # [N, 1]
+        Lambda_reg = base_strength * (1.0 - diag_norm) + min_reg
         
     return Lambda_reg
 

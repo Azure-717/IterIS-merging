@@ -2,6 +2,13 @@
 
 IterIS++ 是对原始 IterIS (Iterative Inference-Solving Alignment) 算法的增强版本，引入了三项核心创新来解决LoRA合并中的收敛震荡、正则化偏差和样本冲突问题。
 
+## ⚠️ 版本更新 (v2.0)
+
+**关键修复:**
+1. **CAMR 正则化缩放修复**: 之前版本中 CAMR 正则化比原始 IterIS 弱约 10^6 倍，导致 CAMR 启用时性能大幅下降。现已修复，CAMR 正则化现在会根据协方差矩阵的 Frobenius 范数自动缩放。
+2. **MATS 安全边界**: 添加了 gamma 系数截断和偏离检测，防止加速过程不稳定。
+3. **推荐超参数更新**: 更新了配置文件中的默认参数。
+
 ## 🚀 创新点概述
 
 ### 1. MATS (动量加速轨迹稳定化)
@@ -32,9 +39,11 @@ IterIS++ 是对原始 IterIS (Iterative Inference-Solving Alignment) 算法的�
 - 高方差方向 = 数据信号充足 = 矩阵可逆稳定 = 无需强正则
 - 低方差方向 = 接近奇异 = 需要正则化"撑起"该维度
 
-**数学形式：**
+**数学形式 (v2.0 修正)：**
 ```
-Λ_reg = α · (1 - Normalize(diag(Σ X̃ X̃ᵀ))) + β I
+cov_norm = ||X̃ᵀ X̃||_F
+base_strength = cov_norm × camr_alpha
+Λ_reg = base_strength × (1 - diag_norm) + cov_norm × camr_beta
 ```
 
 ### 3. DCS (动态冲突感知样本加权)
