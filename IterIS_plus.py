@@ -1158,15 +1158,31 @@ def format_glue_results(task_name, results):
     lines.append(f"Task: {task_name.upper()}")
     lines.append("-" * 80)
     
+    # Handle both direct keys and eval_ prefixed keys from trainer.evaluate()
     # 根据任务类型显示相应的指标
     if 'acc' in results:
         lines.append(f"  Accuracy:      {results['acc']:.4f}")
+    elif 'eval_accuracy' in results:
+        lines.append(f"  Accuracy:      {results['eval_accuracy']:.4f}")
+        
     if 'f1' in results:
         lines.append(f"  F1 Score:      {results['f1']:.4f}")
+    elif 'eval_f1-score' in results:
+        lines.append(f"  F1 Score:      {results['eval_f1-score']:.4f}")
+    elif 'eval_f1' in results:
+        lines.append(f"  F1 Score:      {results['eval_f1']:.4f}")
+        
     if 'mcc' in results:
         lines.append(f"  Matthews Corr: {results['mcc']:.4f}")
+    elif 'eval_MCC' in results:
+        lines.append(f"  Matthews Corr: {results['eval_MCC']:.4f}")
+    elif 'eval_mcc' in results:
+        lines.append(f"  Matthews Corr: {results['eval_mcc']:.4f}")
+        
     if 'acc_and_f1' in results:
         lines.append(f"  Acc & F1:      {results['acc_and_f1']:.4f}")
+    elif 'eval_acc_and_f1' in results:
+        lines.append(f"  Acc & F1:      {results['eval_acc_and_f1']:.4f}")
     
     lines.append("")
     return "\n".join(lines)
