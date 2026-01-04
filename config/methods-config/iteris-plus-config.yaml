@@ -6,6 +6,12 @@
 # - Previous versions had CAMR regularization ~10^6 times weaker than intended
 # - The new implementation scales CAMR by norm(X_tilde_X_tilde), so camr_alpha should
 #   match alpha_2 for equivalent regularization strength
+#
+# MEMORY OPTIMIZATION NOTES:
+# - For OOM (Out of Memory) errors, especially with EMOTION_t5_large, see optimizations below
+# - Three main techniques: FP16 (50% memory reduction), gradient checkpointing (30% reduction),
+#   and sequential layer processing (reduces peak memory)
+# - See MEMORY_OPTIMIZATION.md for detailed guide
 
 seed: 42
 
@@ -94,8 +100,10 @@ EMOTION_t5_large:
   if_divide: True
   if_balance: True
   shuffle: True
-  inner_num: 6
-  outer_num: 10
+  # Batch size optimization: Reduced inner_num to decrease memory per batch
+  # Total samples = inner_num * outer_num = 3 * 20 = 60 (same as original 6 * 10)
+  inner_num: 3  # REDUCED from 6 to reduce memory usage per batch
+  outer_num: 20  # INCREASED from 10 to maintain total samples at 60
   save: 0
   # IterIS++ specific parameters
   use_mats: True
@@ -107,6 +115,10 @@ EMOTION_t5_large:
   use_dcs: True
   dcs_sigma: 0.5           # FIXED: Reduced for sensitivity
   convergence_threshold: 1e-5
+  # Memory optimization parameters (especially for T5-large OOM issues)
+  use_fp16: True  # Enable FP16 mixed precision to reduce memory by ~50%
+  use_gradient_checkpointing: True  # Trade computation for memory
+  sequential_layer_processing: True  # Process layers one at a time
 
 TASKS_blip_base:
   max_iter: 6  # Same as original; MATS may allow convergence with fewer iterations
