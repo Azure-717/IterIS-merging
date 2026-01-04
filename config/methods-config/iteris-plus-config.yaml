@@ -6,6 +6,12 @@
 # - Previous versions had CAMR regularization ~10^6 times weaker than intended
 # - The new implementation scales CAMR by norm(X_tilde_X_tilde), so camr_alpha should
 #   match alpha_2 for equivalent regularization strength
+#
+# MEMORY OPTIMIZATION NOTES:
+# - For OOM (Out of Memory) errors, especially with EMOTION_t5_large, see optimizations below
+# - Three main techniques: FP16 (50% memory reduction), gradient checkpointing (30% reduction),
+#   and sequential layer processing (reduces peak memory)
+# - See MEMORY_OPTIMIZATION.md for detailed guide
 
 seed: 42
 
