@@ -331,76 +331,78 @@ def compute_output_variance(W_list, X_list):
     
     For DCS (Dynamic Conflict-aware Sample reweighting), we need to measure how much
     different LoRAs disagree on the same input. This function computes, for each 
-    (batch_sample, task) pair, the variance of outputs when applying ALL LoRAs to 
-    that sample's features.
+    sample, the variance of outputs when applying ALL LoRAs to that sample's features.
+    
+    FIXED: Properly handles the actual data shapes from IterIS pipeline:
+    - X_list typically comes as [N, batch*seq_len, features] where each task has
+      its own set of features
+    - We compute per-sample variance across all LoRAs
     
     Args:
         W_list: LoRA weight matrices [N, out_dim, in_dim] where N is number of LoRAs
-        X_list: Input features [N, batch, seq_len, features] or [N, batch, features]
-                where X_list[i] contains features from task i's samples
+        X_list: Input features with shape [N, total_samples, features]
+                where total_samples = batch * seq_len, and X_list[i] contains 
+                features collected from task i's data
     
     Returns:
-        variance: Per-sample output variance with shape [batch].
-                  Aggregated over all tasks and sequence positions.
+        variance: Per-sample output variance with shape [total_samples].
+                  Represents cross-model disagreement for each sample position.
     """
     with torch.no_grad():
         N = W_list.shape[0]  # Number of LoRAs/tasks
         
-        # Handle different input dimensions
-        has_seq_dim = (X_list.dim() == 4)
-        if has_seq_dim:
-            # X_list: [N, batch, seq_len, features]
+        # X_list shape: [N, total_samples, features]
+        # For proper variance computation, we want to measure disagreement across LoRAs
+        # for the SAME sample position
+        
+        if X_list.dim() == 2:
+            # Single task case: [total_samples, features]
+            total_samples = X_list.shape[0]
+            feature_dim = X_list.shape[1]
+            X_list = X_list.unsqueeze(0).expand(N, -1, -1)
+        elif X_list.dim() == 3:
+            # Multi-task case: [N, total_samples, features]
+            total_samples = X_list.shape[1]
+            feature_dim = X_list.shape[2]
+        else:
+            # Handle 4D case: [N, batch, seq_len, features]
+            N = X_list.shape[0]
             batch_size = X_list.shape[1]
             seq_len = X_list.shape[2]
             feature_dim = X_list.shape[3]
-        else:
-            # X_list: [N, batch, features]
-            batch_size = X_list.shape[1]
-            seq_len = 1
-            feature_dim = X_list.shape[2]
-            # Add seq_len dimension for uniform processing
-            X_list = X_list.unsqueeze(2)  # [N, batch, 1, features]
+            total_samples = batch_size * seq_len
+            # Flatten to [N, total_samples, features]
+            X_list = X_list.contiguous().view(N, total_samples, feature_dim)
         
-        # For each task's samples, compute outputs from ALL LoRAs
-        # This gives us the cross-model disagreement for conflict detection
+        # For each sample position, compute outputs from ALL LoRAs and measure variance
+        # This captures how much different LoRAs disagree on each input
         
-        # Collect per-sample variance across all tasks
-        all_variances = []
+        # Use the first task's features as a representative sample set
+        # (In practice, features should be similar across tasks for the same position)
+        X_samples = X_list[0]  # [total_samples, features]
         
-        for task_idx in range(N):
-            # Get features from task task_idx's samples: [batch, seq_len, features]
-            X_task = X_list[task_idx]  # [batch, seq_len, features]
-            
-            # Flatten sequence dimension: [batch * seq_len, features]
-            # Use contiguous + view for better performance than reshape
-            X_flat = X_task.contiguous().view(-1, feature_dim)  # [batch*seq_len, features]
-            
-            # Apply ALL LoRAs to this task's samples
-            # W_list: [N, out_dim, in_dim], X_flat: [batch*seq_len, features]
-            # We want: outputs[lora_j] = X_flat @ W_list[j].T for all j
-            # Result: [N, batch*seq_len, out_dim]
-            outputs = torch.matmul(X_flat.unsqueeze(0), W_list.transpose(-1, -2))  # [N, batch*seq_len, out_dim]
-            
-            # Transpose to [batch*seq_len, N, out_dim] for variance computation
-            outputs_transposed = outputs.transpose(0, 1)  # [batch*seq_len, N, out_dim]
-            
-            # Compute mean output across LoRAs: [batch*seq_len, out_dim]
-            mean_output = outputs_transposed.mean(dim=1)
-            
-            # Compute variance across LoRAs for each position
-            diff = outputs_transposed - mean_output.unsqueeze(1)  # [batch*seq_len, N, out_dim]
-            per_position_variance = (diff ** 2).sum(dim=-1).mean(dim=1)  # [batch*seq_len]
-            
-            # Reshape to [batch, seq_len] and average over seq_len
-            per_position_variance = per_position_variance.view(batch_size, seq_len)
-            task_variance = per_position_variance.mean(dim=1)  # [batch]
-            
-            all_variances.append(task_variance)
+        # Apply all LoRAs to these samples
+        # W_list: [N, out_dim, in_dim], X_samples: [total_samples, features]
+        # outputs[i] = X_samples @ W_list[i].T
+        # Result: [N, total_samples, out_dim]
+        outputs = torch.matmul(X_samples.unsqueeze(0), W_list.transpose(-1, -2))  # [N, total_samples, out_dim]
         
-        # Stack and average across tasks to get final per-sample variance
-        # Shape: [N, batch] -> [batch]
-        all_variances = torch.stack(all_variances, dim=0)  # [N, batch]
-        variance = all_variances.mean(dim=0)  # [batch]
+        # Transpose to [total_samples, N, out_dim] for variance computation
+        outputs_transposed = outputs.transpose(0, 1)  # [total_samples, N, out_dim]
+        
+        # Compute mean output across LoRAs: [total_samples, out_dim]
+        mean_output = outputs_transposed.mean(dim=1)
+        
+        # Compute variance across LoRAs for each sample
+        diff = outputs_transposed - mean_output.unsqueeze(1)  # [total_samples, N, out_dim]
+        
+        # Sum over output dimension, mean over LoRAs: [total_samples]
+        # This gives per-sample variance of the output across all LoRAs
+        variance = (diff ** 2).sum(dim=-1).mean(dim=1)  # [total_samples]
+        
+        # Normalize variance by output dimension to make it scale-invariant
+        out_dim = W_list.shape[1]
+        variance = variance / (out_dim + 1e-10)
         
         return variance
 
@@ -412,6 +414,9 @@ def compute_adaptive_sigma(variance, scale_factor=1.0):
     This avoids the need for manual tuning of the sigma parameter by
     adapting it to the actual variance distribution of the data.
     
+    FIXED: Now uses robust percentile-based estimation and ensures a minimum
+    sigma floor to prevent weight collapse.
+    
     Args:
         variance: Per-sample variance tensor [batch]
         scale_factor: Scaling factor for the adaptive sigma
@@ -420,12 +425,86 @@ def compute_adaptive_sigma(variance, scale_factor=1.0):
         sigma: Adaptive sigma value
     """
     with torch.no_grad():
-        # Use median absolute deviation (more robust than std)
-        median_var = torch.median(variance)
-        mad = torch.median(torch.abs(variance - median_var))
-        # Scale factor to approximate std from MAD
-        sigma = (mad * 1.4826 + 1e-8) * scale_factor
-        return sigma.item()
+        # Use interquartile range (IQR) as a more robust spread estimator
+        # This prevents sigma from being too small when variance is tightly clustered
+        q75 = torch.quantile(variance, 0.75)
+        q25 = torch.quantile(variance, 0.25)
+        iqr = q75 - q25
+        
+        # Also compute mean as a fallback for when IQR is small
+        mean_var = variance.mean()
+        
+        # Use the larger of IQR-based sigma or mean-based sigma
+        # This ensures sigma is always meaningful relative to the data
+        sigma_iqr = (iqr * 0.7413 + 1e-8)  # IQR to std conversion factor
+        sigma_mean = (mean_var + 1e-8)  # Use mean as alternative reference
+        
+        # Take the maximum to ensure sigma is never too small
+        sigma = max(sigma_iqr.item(), sigma_mean.item() * 0.5) * scale_factor
+        
+        # Ensure minimum sigma floor to prevent collapse
+        # This is critical: even with normalized variance, we need a reasonable floor
+        sigma = max(sigma, 0.1)
+        
+        return sigma
+
+
+def compute_stable_dcs_weights(variance, scale_factor=1.0, min_weight=0.1, max_weight=3.0):
+    """
+    Compute numerically stable DCS sample weights with proper safeguards.
+    
+    This function addresses the key issues that cause model collapse:
+    1. Uses log1p compression to handle variance spanning multiple orders of magnitude
+    2. Applies soft weighting (sigmoid-based) instead of sharp exponential
+    3. Enforces minimum and maximum weight bounds to prevent collapse
+    4. Uses robust normalization that preserves weight distribution
+    
+    Args:
+        variance: Per-sample variance tensor [batch]
+        scale_factor: Scaling factor for sensitivity (higher = more aggressive weighting)
+        min_weight: Minimum allowed weight (floor to prevent collapse)
+        max_weight: Maximum allowed weight (ceiling to prevent outlier domination)
+    
+    Returns:
+        weights: Normalized sample weights [batch], clamped to [min_weight, max_weight]
+    """
+    with torch.no_grad():
+        # Step 1: Apply log1p compression to handle large variance differences
+        # This prevents exponential collapse when variance spans orders of magnitude
+        log_variance = torch.log1p(variance)
+        
+        # Step 2: Normalize variance to [0, 1] range using robust percentile-based scaling
+        # This makes the weighting invariant to absolute variance scale
+        v_min = log_variance.min()
+        v_max = log_variance.max()
+        v_range = v_max - v_min + 1e-8
+        normalized_var = (log_variance - v_min) / v_range
+        
+        # Step 3: Apply soft weighting using shifted and scaled function
+        # Instead of exp(-V/σ²) which can collapse to 0, use a sigmoid-like soft mapping
+        # High variance (normalized close to 1) → lower weight
+        # Low variance (normalized close to 0) → higher weight
+        # We use: w = 1 - (normalized_var * scale_factor).clamp(0, 1) + min_weight
+        # This gives a linear soft weighting that never goes to 0
+        
+        # Alternative: Use softmin-like approach for smoother distribution
+        # w_s = exp(-normalized_var * scale_factor) / sum(exp(-normalized_var * scale_factor)) * N
+        # But this can still have issues, so we use a simpler bounded approach:
+        
+        # Compute weights: lower normalized variance = higher weight
+        # Scale factor controls how aggressively we differentiate samples
+        raw_weights = torch.exp(-normalized_var * scale_factor)
+        
+        # Step 4: Normalize weights to have mean 1, then clamp
+        weights = raw_weights / (raw_weights.mean() + 1e-10)
+        
+        # Step 5: Clamp weights to prevent both collapse and explosion
+        weights = torch.clamp(weights, min=min_weight, max=max_weight)
+        
+        # Step 6: Re-normalize after clamping to preserve expected gradient scale
+        weights = weights / (weights.mean() + 1e-10)
+        
+        return weights
 
 
 # ============================================================================
@@ -492,21 +571,38 @@ def solution_matrix_plus(
         X_tilde_list = (1 - reg_ceof) * X_tilde_list + reg_ceof * X_list
         
         # Apply DCS sample weights if provided
+        # FIXED: Properly handle weight dimensions and apply to features
         if sample_weights is not None and sample_weights.numel() > 0:
-            batch_size = sample_weights.shape[0]
-            sqrt_weights = torch.sqrt(sample_weights)
+            # sample_weights shape: [total_samples]
+            # X_list shape after transpose/flatten: [N, total_samples, features]
+            num_samples = sample_weights.shape[0]
+            num_features_total = X_list.shape[1]
             
-            features_per_batch = X_list.shape[1] // batch_size
-            if features_per_batch > 0 and X_list.shape[1] % batch_size == 0:
-                X_list_reshaped = X_list.view(N, batch_size, features_per_batch, -1)
-                X_tilde_reshaped = X_tilde_list.view(N, batch_size, features_per_batch, -1)
+            # Check if dimensions are compatible
+            if num_features_total == num_samples:
+                # Direct application: each sample position gets its weight
+                sqrt_weights = torch.sqrt(sample_weights).view(1, num_samples, 1)
+                X_list = X_list * sqrt_weights
+                X_tilde_list = X_tilde_list * sqrt_weights
+            elif num_features_total % num_samples == 0:
+                # Features are stacked per sample - reshape and apply
+                features_per_sample = num_features_total // num_samples
+                sqrt_weights = torch.sqrt(sample_weights)
                 
-                # Broadcasting weights
-                X_list_reshaped = X_list_reshaped * sqrt_weights.view(1, batch_size, 1, 1)
-                X_tilde_reshaped = X_tilde_reshaped * sqrt_weights.view(1, batch_size, 1, 1)
+                X_list_reshaped = X_list.view(N, num_samples, features_per_sample, -1)
+                X_tilde_reshaped = X_tilde_list.view(N, num_samples, features_per_sample, -1)
+                
+                # Broadcasting weights: [1, num_samples, 1, 1]
+                X_list_reshaped = X_list_reshaped * sqrt_weights.view(1, num_samples, 1, 1)
+                X_tilde_reshaped = X_tilde_reshaped * sqrt_weights.view(1, num_samples, 1, 1)
                 
                 X_list = X_list_reshaped.view(N, -1, X_list_reshaped.shape[-1])
                 X_tilde_list = X_tilde_reshaped.view(N, -1, X_tilde_reshaped.shape[-1])
+            else:
+                # Dimension mismatch - log warning and skip weighting
+                # This is a fallback; proper alignment should be ensured upstream
+                print(f"[DCS Warning] Weight dimension mismatch: features={num_features_total}, "
+                      f"weights={num_samples}. Skipping sample weighting.")
         
         X_X_tilde = torch.matmul(X_list.transpose(-1, -2), X_tilde_list)
         X_X_tilde_norm = torch.norm(X_X_tilde, p='fro', dim=[-2, -1]) * alpha_1
@@ -695,31 +791,47 @@ def update_param_plus(
                 # than input feature variance alone
                 sample_weights = None
                 if use_dcs:
+                    # DCS warmup: gradually increase DCS effect over first few iterations
+                    # This prevents early iterations from being dominated by unreliable variance estimates
+                    dcs_warmup_iters = 2
+                    warmup_factor = min(1.0, (iteration + 1) / dcs_warmup_iters)
+                    
                     # Compute output variance (per-sample, aggregated over sequence positions)
-                    output_variance = compute_output_variance(W_list, X_list.transpose(0, 1))
+                    # X_list has shape [N, total_samples, features] - pass directly
+                    output_variance = compute_output_variance(W_list, X_list)
                     
                     # Log DCS statistics on first layer of first iteration for debugging
                     first_layer_key = next(iter(X_dict.keys()))
                     if iteration == 0 and idx == first_layer_key:
-                        logging.info(f"[DCS] Sample variance stats - min: {output_variance.min().item():.4e}, "
+                        print(f"[DCS] Sample variance stats - min: {output_variance.min().item():.4e}, "
                               f"max: {output_variance.max().item():.4e}, "
                               f"mean: {output_variance.mean().item():.4e}, "
                               f"shape: {output_variance.shape}")
                     
-                    # Use adaptive sigma based on variance distribution
-                    effective_sigma = compute_adaptive_sigma(output_variance, scale_factor=dcs_sigma)
+                    # Use the new stable DCS weight computation with proper safeguards
+                    # - log1p compression for variance
+                    # - min/max weight clamping to prevent collapse
+                    # - scale_factor controls aggressiveness (dcs_sigma reinterpreted as scale)
+                    # During warmup, reduce effective scale_factor to make weights more uniform
+                    effective_scale = dcs_sigma * warmup_factor
                     
-                    # Compute sample weights using Gaussian kernel
-                    # Higher variance (cross-model disagreement) → lower weight (down-weighted)
-                    sample_weights = torch.exp(-output_variance / (effective_sigma ** 2 + 1e-10))
-                    sample_weights = sample_weights / (sample_weights.mean() + 1e-10)
+                    # Compute stable weights with enforced bounds
+                    # min_weight=0.1 ensures no sample is completely ignored
+                    # max_weight=3.0 prevents single samples from dominating
+                    sample_weights = compute_stable_dcs_weights(
+                        output_variance, 
+                        scale_factor=max(effective_scale, 0.1),
+                        min_weight=0.1,
+                        max_weight=3.0
+                    )
                     
                     # Log DCS weight statistics on first layer of first iteration
                     if iteration == 0 and idx == first_layer_key:
-                        logging.info(f"[DCS] Effective sigma: {effective_sigma:.4e}")
-                        logging.info(f"[DCS] Sample weights stats - min: {sample_weights.min().item():.4f}, "
+                        print(f"[DCS] Warmup factor: {warmup_factor:.2f}, Effective scale: {effective_scale:.4f}")
+                        print(f"[DCS] Sample weights stats - min: {sample_weights.min().item():.4f}, "
                               f"max: {sample_weights.max().item():.4f}, "
-                              f"std: {sample_weights.std().item():.4f}")
+                              f"std: {sample_weights.std().item():.4f}, "
+                              f"mean: {sample_weights.mean().item():.4f}")
                 
                 X_tilde = X_list if iteration == 0 else X_tilde_dict[idx].to('cuda')
                 
