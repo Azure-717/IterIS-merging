@@ -100,8 +100,10 @@ EMOTION_t5_large:
   if_divide: True
   if_balance: True
   shuffle: True
-  inner_num: 3  # REDUCED from 6 to 3 to reduce memory usage
-  outer_num: 20  # INCREASED from 10 to 20 to maintain total samples (3*20=60)
+  # Batch size optimization: Reduced inner_num to decrease memory per batch
+  # Total samples = inner_num * outer_num = 3 * 20 = 60 (same as original 6 * 10)
+  inner_num: 3  # REDUCED from 6 to reduce memory usage per batch
+  outer_num: 20  # INCREASED from 10 to maintain total samples at 60
   save: 0
   # IterIS++ specific parameters
   use_mats: True

@@ -939,15 +939,25 @@ def update_param_plus(
                     W_ls_cuda = W_ls.to('cuda')
                     W_accelerated = anderson_accelerators[idx].update(W_current, W_ls_cuda)
                     tar_lora_list[idx] = W_accelerated.to('cpu')
-                    # Clean up intermediate tensors
-                    del W_current, W_ls_cuda, W_accelerated
+                    # Clean up intermediate tensors safely
+                    try:
+                        del W_current, W_ls_cuda, W_accelerated
+                    except:
+                        pass
                 else:
                     tar_lora_list[idx] = W_ls.to('cpu')
                 
                 # Clean up tensors for this layer to reduce memory
-                del W_list, X_list, merge_W, ceof_list, X_tilde, W_ls
+                # Use try-except to handle cases where variables might not exist
+                try:
+                    del W_list, X_list, merge_W, ceof_list, X_tilde, W_ls
+                except:
+                    pass
                 if sample_weights is not None:
-                    del sample_weights
+                    try:
+                        del sample_weights
+                    except:
+                        pass
                 
                 # Aggressive cleanup after each layer when using sequential processing
                 if sequential_layer_processing:
