@@ -1160,7 +1160,7 @@ def format_glue_results(task_name, results):
     lines.append("-" * 80)
     
     # Handle both direct keys and eval_ prefixed keys from trainer.evaluate()
-    # 根据任务类型显示相应的指标
+    # Display metrics based on task type
     if 'acc' in results:
         lines.append(f"  Accuracy:      {results['acc']:.4f}")
     elif 'eval_accuracy' in results:
