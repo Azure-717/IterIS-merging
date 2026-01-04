@@ -329,56 +329,78 @@ def compute_output_variance(W_list, X_list):
     This is a more accurate proxy for gradient conflict than input feature variance,
     as it captures differences in the actual transformations applied by each LoRA.
     
-    The variance is computed per-sample (per batch element) by first calculating
-    per-position variance, then averaging across all sequence positions. Samples 
-    with high cross-model disagreement (high variance) will be down-weighted in
-    the DCS algorithm to reduce their influence during merging.
+    For DCS (Dynamic Conflict-aware Sample reweighting), we need to measure how much
+    different LoRAs disagree on the same input. This function computes, for each 
+    (batch_sample, task) pair, the variance of outputs when applying ALL LoRAs to 
+    that sample's features.
     
     Args:
-        W_list: LoRA weight matrices [N, out_dim, in_dim]
-        X_list: Input features [N, batch, features] or [N, batch, seq_len, features]
+        W_list: LoRA weight matrices [N, out_dim, in_dim] where N is number of LoRAs
+        X_list: Input features [N, batch, seq_len, features] or [N, batch, features]
+                where X_list[i] contains features from task i's samples
     
     Returns:
         variance: Per-sample output variance with shape [batch].
-                  For 4D input, sequence positions are aggregated by mean averaging
-                  across the sequence dimension.
+                  Aggregated over all tasks and sequence positions.
     """
     with torch.no_grad():
-        N = W_list.shape[0]
+        N = W_list.shape[0]  # Number of LoRAs/tasks
         
-        # Handle 4D input: [N, batch, seq_len, features]
-        # We need to compute per-sample variance, not per-token variance
+        # Handle different input dimensions
         has_seq_dim = (X_list.dim() == 4)
         if has_seq_dim:
+            # X_list: [N, batch, seq_len, features]
             batch_size = X_list.shape[1]
             seq_len = X_list.shape[2]
-            # Flatten sequence dimension for computation: [N, batch*seq_len, features]
-            X_flat = X_list.flatten(start_dim=1, end_dim=2)
+            feature_dim = X_list.shape[3]
         else:
+            # X_list: [N, batch, features]
             batch_size = X_list.shape[1]
             seq_len = 1
-            X_flat = X_list
+            feature_dim = X_list.shape[2]
+            # Add seq_len dimension for uniform processing
+            X_list = X_list.unsqueeze(2)  # [N, batch, 1, features]
         
-        # Compute outputs for each LoRA: [N, batch*seq_len, out_dim]
-        outputs = torch.matmul(X_flat, W_list.transpose(-1, -2))
+        # For each task's samples, compute outputs from ALL LoRAs
+        # This gives us the cross-model disagreement for conflict detection
         
-        # Transpose to [batch*seq_len, N, out_dim]
-        outputs_transposed = outputs.transpose(0, 1)
+        # Collect per-sample variance across all tasks
+        all_variances = []
         
-        # Compute mean output across LoRAs: [batch*seq_len, out_dim]
-        mean_output = outputs_transposed.mean(dim=1)
-        
-        # Compute per-position variance across LoRAs
-        diff = outputs_transposed - mean_output.unsqueeze(1)  # [batch*seq_len, N, out_dim]
-        per_position_variance = (diff ** 2).sum(dim=-1).mean(dim=1)  # [batch*seq_len]
-        
-        # Aggregate to per-sample variance by averaging over sequence positions
-        if has_seq_dim:
+        for task_idx in range(N):
+            # Get features from task task_idx's samples: [batch, seq_len, features]
+            X_task = X_list[task_idx]  # [batch, seq_len, features]
+            
+            # Flatten sequence dimension: [batch * seq_len, features]
+            # Use contiguous + view for better performance than reshape
+            X_flat = X_task.contiguous().view(-1, feature_dim)  # [batch*seq_len, features]
+            
+            # Apply ALL LoRAs to this task's samples
+            # W_list: [N, out_dim, in_dim], X_flat: [batch*seq_len, features]
+            # We want: outputs[lora_j] = X_flat @ W_list[j].T for all j
+            # Result: [N, batch*seq_len, out_dim]
+            outputs = torch.matmul(X_flat.unsqueeze(0), W_list.transpose(-1, -2))  # [N, batch*seq_len, out_dim]
+            
+            # Transpose to [batch*seq_len, N, out_dim] for variance computation
+            outputs_transposed = outputs.transpose(0, 1)  # [batch*seq_len, N, out_dim]
+            
+            # Compute mean output across LoRAs: [batch*seq_len, out_dim]
+            mean_output = outputs_transposed.mean(dim=1)
+            
+            # Compute variance across LoRAs for each position
+            diff = outputs_transposed - mean_output.unsqueeze(1)  # [batch*seq_len, N, out_dim]
+            per_position_variance = (diff ** 2).sum(dim=-1).mean(dim=1)  # [batch*seq_len]
+            
             # Reshape to [batch, seq_len] and average over seq_len
             per_position_variance = per_position_variance.view(batch_size, seq_len)
-            variance = per_position_variance.mean(dim=1)  # [batch]
-        else:
-            variance = per_position_variance  # [batch]
+            task_variance = per_position_variance.mean(dim=1)  # [batch]
+            
+            all_variances.append(task_variance)
+        
+        # Stack and average across tasks to get final per-sample variance
+        # Shape: [N, batch] -> [batch]
+        all_variances = torch.stack(all_variances, dim=0)  # [N, batch]
+        variance = all_variances.mean(dim=0)  # [batch]
         
         return variance
 
