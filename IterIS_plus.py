@@ -329,38 +329,54 @@ def compute_output_variance(W_list, X_list):
     This is a more accurate proxy for gradient conflict than input feature variance,
     as it captures differences in the actual transformations applied by each LoRA.
     
+    The variance is computed per-sample (per batch element), aggregating across
+    all sequence positions. This ensures samples with high cross-model disagreement
+    are down-weighted as a whole.
+    
     Args:
         W_list: LoRA weight matrices [N, out_dim, in_dim]
         X_list: Input features [N, batch, features] or [N, batch, seq_len, features]
     
     Returns:
-        variance: Per-sample output variance. Shape is [batch] for 3D input,
-                  or [batch*seq_len] for 4D input (after flattening).
+        variance: Per-sample output variance with shape [batch].
+                  For 4D input, sequence positions are aggregated into sample-level variance.
     """
     with torch.no_grad():
         N = W_list.shape[0]
         
-        # Handle 4D input: [N, batch, seq_len, features] -> [N, batch*seq_len, features]
-        # This is consistent with solution_matrix_plus which also flattens these dimensions
-        if X_list.dim() == 4:
-            X_list = X_list.flatten(start_dim=1, end_dim=2)  # [N, batch*seq_len, features]
+        # Handle 4D input: [N, batch, seq_len, features]
+        # We need to compute per-sample variance, not per-token variance
+        has_seq_dim = (X_list.dim() == 4)
+        if has_seq_dim:
+            batch_size = X_list.shape[1]
+            seq_len = X_list.shape[2]
+            # Flatten sequence dimension for computation: [N, batch*seq_len, features]
+            X_flat = X_list.flatten(start_dim=1, end_dim=2)
+        else:
+            batch_size = X_list.shape[1]
+            seq_len = 1
+            X_flat = X_list
         
-        # Compute outputs for each LoRA: Y_i = W_i @ X_i^T
-        # X_list shape: [N, batch, features], W_list shape: [N, out_dim, in_dim]
-        # We compute the output norm difference across LoRAs
+        # Compute outputs for each LoRA: [N, batch*seq_len, out_dim]
+        outputs = torch.matmul(X_flat, W_list.transpose(-1, -2))
         
-        # For each LoRA, compute output: [N, batch, out_dim]
-        outputs = torch.matmul(X_list, W_list.transpose(-1, -2))  # [N, batch, out_dim]
-        
-        # Transpose to [batch, N, out_dim]
+        # Transpose to [batch*seq_len, N, out_dim]
         outputs_transposed = outputs.transpose(0, 1)
         
-        # Compute mean output across LoRAs
-        mean_output = outputs_transposed.mean(dim=1)  # [batch, out_dim]
+        # Compute mean output across LoRAs: [batch*seq_len, out_dim]
+        mean_output = outputs_transposed.mean(dim=1)
         
-        # Compute variance
-        diff = outputs_transposed - mean_output.unsqueeze(1)  # [batch, N, out_dim]
-        variance = (diff ** 2).sum(dim=-1).mean(dim=1)  # [batch]
+        # Compute per-position variance across LoRAs
+        diff = outputs_transposed - mean_output.unsqueeze(1)  # [batch*seq_len, N, out_dim]
+        per_position_variance = (diff ** 2).sum(dim=-1).mean(dim=1)  # [batch*seq_len]
+        
+        # Aggregate to per-sample variance by averaging over sequence positions
+        if has_seq_dim:
+            # Reshape to [batch, seq_len] and average over seq_len
+            per_position_variance = per_position_variance.view(batch_size, seq_len)
+            variance = per_position_variance.mean(dim=1)  # [batch]
+        else:
+            variance = per_position_variance  # [batch]
         
         return variance
 
@@ -639,20 +655,29 @@ def update_param_plus(
                 # than input feature variance alone
                 sample_weights = None
                 if use_dcs:
-                    # Compute output variance
+                    # Compute output variance (per-sample, aggregated over sequence positions)
                     output_variance = compute_output_variance(W_list, X_list.transpose(0, 1))
-                    # Use adaptive sigma
-
-
-
-
-
-
+                    
+                    # Log DCS statistics on first layer of first iteration for debugging
+                    if iteration == 0 and idx == list(X_dict.keys())[0]:
+                        print(f"[DCS] Sample variance stats - min: {output_variance.min().item():.4e}, "
+                              f"max: {output_variance.max().item():.4e}, "
+                              f"mean: {output_variance.mean().item():.4e}, "
+                              f"shape: {output_variance.shape}")
+                    
+                    # Use adaptive sigma based on variance distribution
                     effective_sigma = compute_adaptive_sigma(output_variance, scale_factor=dcs_sigma)
                     
                     # Compute sample weights using Gaussian kernel
                     sample_weights = torch.exp(-output_variance / (effective_sigma ** 2 + 1e-10))
                     sample_weights = sample_weights / (sample_weights.mean() + 1e-10)
+                    
+                    # Log DCS weight statistics on first layer of first iteration
+                    if iteration == 0 and idx == list(X_dict.keys())[0]:
+                        print(f"[DCS] Effective sigma: {effective_sigma:.4e}")
+                        print(f"[DCS] Sample weights stats - min: {sample_weights.min().item():.4f}, "
+                              f"max: {sample_weights.max().item():.4f}, "
+                              f"std: {sample_weights.std().item():.4f}")
                 
                 X_tilde = X_list if iteration == 0 else X_tilde_dict[idx].to('cuda')
                 
