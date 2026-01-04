@@ -331,14 +331,20 @@ def compute_output_variance(W_list, X_list):
     
     Args:
         W_list: LoRA weight matrices [N, out_dim, in_dim]
-        X_list: Input features [N, batch, features]
+        X_list: Input features [N, batch, features] or [N, batch, seq_len, features]
     
     Returns:
-        variance: Per-sample output variance [batch]
+        variance: Per-sample output variance. Shape is [batch] for 3D input,
+                  or [batch*seq_len] for 4D input (after flattening).
     """
     with torch.no_grad():
         N = W_list.shape[0]
-        print(f"compute_output_variance: W_list.shape={W_list.shape}, X_list.shape={X_list.shape}")
+        
+        # Handle 4D input: [N, batch, seq_len, features] -> [N, batch*seq_len, features]
+        # This is consistent with solution_matrix_plus which also flattens these dimensions
+        if X_list.dim() == 4:
+            X_list = X_list.flatten(start_dim=1, end_dim=2)  # [N, batch*seq_len, features]
+        
         # Compute outputs for each LoRA: Y_i = W_i @ X_i^T
         # X_list shape: [N, batch, features], W_list shape: [N, out_dim, in_dim]
         # We compute the output norm difference across LoRAs
@@ -633,8 +639,6 @@ def update_param_plus(
                 # than input feature variance alone
                 sample_weights = None
                 if use_dcs:
-                    # Debug: print shapes
-                    print(f"DCS DEBUG: idx={idx}, X_list.shape={X_list.shape}, W_list.shape={W_list.shape}")
                     # Compute output variance
                     output_variance = compute_output_variance(W_list, X_list.transpose(0, 1))
                     # Use adaptive sigma
