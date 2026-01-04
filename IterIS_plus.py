@@ -510,7 +510,23 @@ def solution_matrix_plus(
         # 这里的 .view(N, 1, 1) 现在绝对安全了
         term1 = torch.sum(torch.matmul(W_list, X_X_tilde) * (ceof_list * manual_ceof).view(N, 1, 1), dim=0).double()
         term2 = torch.sum(X_tilde_X_tilde * (ceof_list * manual_ceof).view(N, 1, 1), dim=0).double()
-        results = torch.linalg.solve(term2.t(), term1.t()).double().t()
+        
+        # When DCS sample weights are applied, the matrix may become ill-conditioned or singular.
+        # Add extra regularization to ensure numerical stability.
+        # The regularization value 1e-4 is chosen to be small enough to not significantly affect
+        # the solution, but large enough to prevent singularity in most cases.
+        if sample_weights is not None and sample_weights.numel() > 0:
+            dcs_min_reg = 1e-4
+            term2 = term2 + dcs_min_reg * torch.eye(term2.shape[0], dtype=term2.dtype, device=term2.device)
+        
+        # Use try-except with fallback to lstsq for robustness.
+        # Catch RuntimeError which covers LinAlgError (including internal torch._C._LinAlgError).
+        try:
+            results = torch.linalg.solve(term2.t(), term1.t()).double().t()
+        except RuntimeError:
+            # Fallback to least squares solution which handles rank-deficient matrices
+            solution = torch.linalg.lstsq(term2.t(), term1.t())
+            results = solution.solution.double().t()
 
         return results.to('cpu')
 
