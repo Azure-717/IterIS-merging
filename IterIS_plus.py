@@ -11,6 +11,8 @@ Reference: IterIS: Iterative Inference-Solving Alignment for LoRA Merging (CVPR 
 
 import os
 import gc
+import re
+import sys
 import yaml
 import time
 import torch
@@ -18,6 +20,7 @@ import random
 import argparse
 import numpy as np
 import torch.nn as nn
+from io import StringIO
 from datasets import load_dataset
 from safetensors import safe_open
 from sklearn.metrics import f1_score
@@ -1006,7 +1009,6 @@ def update_param_plus(
 def generate_output_filename(task_type, use_mats, use_camr, use_dcs):
     """Generate unique filename based on task type and activation flags."""
     output_dir = f'outputs_{task_type.lower()}'
-    import os
     os.makedirs(output_dir, exist_ok=True)
     
     # Create base filename
@@ -1281,34 +1283,7 @@ def main():
     gc.collect()
 
     # ========================================================================
-    # Collect and save evaluation results
-    # ========================================================================
-    
-    # Collect evaluation metrics
-    eval_results = {}
-    original_eval_fn = eval_iteris_model.__wrapped__ if hasattr(eval_iteris_model, '__wrapped__') else None
-    
-    # Generate output filename
-
-    
-    output_filename = generate_output_filename(task_type, use_mats, use_camr, use_dcs)
-
-    
-    
-
-    
-    # Collect evaluation results
-
-    
-    eval_results = {}
-
-    
-    
-
-    
-    # Model evaluation
-    # ========================================================================
-    # Save evaluation results to file (First save config and open file)
+    # Save evaluation results to file
     # ========================================================================
     output_file = generate_output_filename(task_type, use_mats, use_camr, use_dcs)
     
@@ -1357,9 +1332,6 @@ def main():
         print(f"\n--- Evaluating {task_name} ---")
         
         # Capture evaluation output
-        import sys, re
-        from io import StringIO
-        
         old_stdout = sys.stdout
         sys.stdout = StringIO()
         
