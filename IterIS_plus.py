@@ -1354,7 +1354,8 @@ def main():
         # Parse results from captured output
         try:
             # Extract the results dictionary
-            result_match = re.search(r"Eval results[-]*\n({.*?})", captured, re.DOTALL)
+            # Pattern matches: "------------{task_name}, {model_name} Eval results------------\n{...}"
+            result_match = re.search(r"Eval results[-]*\s*\n\s*(\{.*?\})", captured, re.DOTALL)
             if result_match:
                 results_str = result_match.group(1)
                 results = eval(results_str)
