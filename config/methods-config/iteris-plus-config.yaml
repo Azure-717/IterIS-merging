@@ -94,8 +94,8 @@ EMOTION_t5_large:
   if_divide: True
   if_balance: True
   shuffle: True
-  inner_num: 6
-  outer_num: 10
+  inner_num: 3  # REDUCED from 6 to 3 to reduce memory usage
+  outer_num: 20  # INCREASED from 10 to 20 to maintain total samples (3*20=60)
   save: 0
   # IterIS++ specific parameters
   use_mats: True
@@ -107,6 +107,10 @@ EMOTION_t5_large:
   use_dcs: True
   dcs_sigma: 0.5           # FIXED: Reduced for sensitivity
   convergence_threshold: 1e-5
+  # Memory optimization parameters (especially for T5-large OOM issues)
+  use_fp16: True  # Enable FP16 mixed precision to reduce memory by ~50%
+  use_gradient_checkpointing: True  # Trade computation for memory
+  sequential_layer_processing: True  # Process layers one at a time
 
 TASKS_blip_base:
   max_iter: 6  # Same as original; MATS may allow convergence with fewer iterations

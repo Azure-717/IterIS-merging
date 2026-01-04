@@ -724,6 +724,10 @@ def update_param_plus(
     use_dcs=True,
     dcs_sigma=1.0,
     convergence_threshold=1e-6,  # For early stopping
+    # Memory optimization parameters
+    use_fp16=False,  # Use mixed precision to reduce memory
+    use_gradient_checkpointing=False,  # Enable gradient checkpointing
+    sequential_layer_processing=False,  # Process layers one at a time
     **generation_kwargs,
 ):
     """
@@ -756,6 +760,9 @@ def update_param_plus(
         use_dcs: Enable DCS (Dynamic Sample Weighting)
         dcs_sigma: Scale factor for adaptive DCS sigma
         convergence_threshold: Threshold for early stopping based on weight change
+        use_fp16: Use mixed precision (FP16) to reduce memory usage
+        use_gradient_checkpointing: Enable gradient checkpointing for models
+        sequential_layer_processing: Process layers sequentially to reduce peak memory
         **generation_kwargs: Additional generation arguments
     
     Returns:
@@ -769,6 +776,10 @@ def update_param_plus(
     print(f"  - CAMR (Curvature-Aware Reg.): {use_camr}")
     print(f"  - DCS (Dynamic Sample Weight): {use_dcs}")
     print(f"  - Convergence threshold: {convergence_threshold}")
+    print(f"Memory optimizations:")
+    print(f"  - Mixed Precision (FP16): {use_fp16}")
+    print(f"  - Gradient Checkpointing: {use_gradient_checkpointing}")
+    print(f"  - Sequential Layer Processing: {sequential_layer_processing}")
     print("=" * 60)
     
     # Get all mid-features from each LoRA model
@@ -819,14 +830,31 @@ def update_param_plus(
         print("Computing optimal solution with IterIS++ enhancements...")
         
         with torch.no_grad():
-            for idx in X_dict.keys():
-                W_list, X_list = torch.stack(
-                    [get_lora_matrix(model_name, tensors_lora[i], idx, lora_alpha[i], rank=rank, no_weight=True) 
-                     for i in range(len(tensors_lora))]
-                ).to('cuda'), X_dict[idx].to('cuda')
+            # Sequential layer processing: process layers one at a time to reduce peak memory
+            layer_keys = list(X_dict.keys())
+            
+            if sequential_layer_processing:
+                print(f"  Processing {len(layer_keys)} layers sequentially to optimize memory...")
+            
+            for idx in layer_keys:
+                # Convert to FP16 if enabled to reduce memory
+                if use_fp16:
+                    W_list, X_list = torch.stack(
+                        [get_lora_matrix(model_name, tensors_lora[i], idx, lora_alpha[i], rank=rank, no_weight=True) 
+                         for i in range(len(tensors_lora))]
+                    ).half().to('cuda'), X_dict[idx].half().to('cuda')
+                else:
+                    W_list, X_list = torch.stack(
+                        [get_lora_matrix(model_name, tensors_lora[i], idx, lora_alpha[i], rank=rank, no_weight=True) 
+                         for i in range(len(tensors_lora))]
+                    ).to('cuda'), X_dict[idx].to('cuda')
                 
                 N = W_list.shape[0]
-                merge_W = W_list + pretrain_matrix_dict[idx].unsqueeze(0).repeat(N, 1, 1).to('cuda')
+                if use_fp16:
+                    merge_W = W_list + pretrain_matrix_dict[idx].half().unsqueeze(0).repeat(N, 1, 1).to('cuda')
+                else:
+                    merge_W = W_list + pretrain_matrix_dict[idx].unsqueeze(0).repeat(N, 1, 1).to('cuda')
+                    
                 ceof_list = torch.norm(merge_W, p='fro', dim=[-2, -1]) ** 2 / \
                             torch.sum(torch.norm(torch.matmul(X_list, merge_W.transpose(1, 2)), p='fro', dim=[-2, -1]) ** 2, dim=0)
                 
@@ -877,7 +905,10 @@ def update_param_plus(
                               f"std: {sample_weights.std().item():.4f}, "
                               f"mean: {sample_weights.mean().item():.4f}")
                 
-                X_tilde = X_list if iteration == 0 else X_tilde_dict[idx].to('cuda')
+                if use_fp16:
+                    X_tilde = X_list if iteration == 0 else X_tilde_dict[idx].half().to('cuda')
+                else:
+                    X_tilde = X_list if iteration == 0 else X_tilde_dict[idx].to('cuda')
                 
                 if with_pretrain_matrix == 0:
                     W_ls = solution_matrix_plus(
@@ -898,17 +929,34 @@ def update_param_plus(
                         camr_beta=camr_beta,
                     )
                 
+                # Convert back to FP32 for MATS and storage if using FP16
+                if use_fp16:
+                    W_ls = W_ls.float()
+                
                 # MATS: Apply Anderson Acceleration
                 if use_mats and idx in prev_tar_lora_list:
                     W_current = prev_tar_lora_list[idx].to('cuda')
                     W_ls_cuda = W_ls.to('cuda')
                     W_accelerated = anderson_accelerators[idx].update(W_current, W_ls_cuda)
                     tar_lora_list[idx] = W_accelerated.to('cpu')
+                    # Clean up intermediate tensors
+                    del W_current, W_ls_cuda, W_accelerated
                 else:
                     tar_lora_list[idx] = W_ls.to('cpu')
                 
-                torch.cuda.empty_cache()
-                gc.collect()
+                # Clean up tensors for this layer to reduce memory
+                del W_list, X_list, merge_W, ceof_list, X_tilde, W_ls
+                if sample_weights is not None:
+                    del sample_weights
+                
+                # Aggressive cleanup after each layer when using sequential processing
+                if sequential_layer_processing:
+                    torch.cuda.empty_cache()
+                    gc.collect()
+        
+        # Final cleanup after all layers processed
+        torch.cuda.empty_cache()
+        gc.collect()
         
         # Convergence check: compute total weight change (before storing new weights)
         converged = False
@@ -933,11 +981,34 @@ def update_param_plus(
         
         model = None
         if 't5' in model_name:
-            model = T5WithHooks.from_pretrained(model_name, lora_path=lora_path[0] + '/adapter_model.safetensors').to('cuda')
+            model = T5WithHooks.from_pretrained(model_name, lora_path=lora_path[0] + '/adapter_model.safetensors')
+            # Enable gradient checkpointing if requested (reduces memory at cost of speed)
+            if use_gradient_checkpointing and hasattr(model, 'gradient_checkpointing_enable'):
+                model.gradient_checkpointing_enable()
+                print("  Gradient checkpointing enabled")
+            # Move to FP16 if requested
+            if use_fp16:
+                model = model.half()
+                print("  Model converted to FP16")
+            model = model.to('cuda')
         elif 'bart' in model_name:
-            model = BartWithHooks.from_pretrained(model_name, lora_path=lora_path[0] + '/adapter_model.safetensors').to('cuda')
+            model = BartWithHooks.from_pretrained(model_name, lora_path=lora_path[0] + '/adapter_model.safetensors')
+            if use_gradient_checkpointing and hasattr(model, 'gradient_checkpointing_enable'):
+                model.gradient_checkpointing_enable()
+                print("  Gradient checkpointing enabled")
+            if use_fp16:
+                model = model.half()
+                print("  Model converted to FP16")
+            model = model.to('cuda')
         elif 'blip' in model_name:
-            model = BlipWithHook.from_pretrained(model_name).to('cuda')
+            model = BlipWithHook.from_pretrained(model_name)
+            if use_gradient_checkpointing and hasattr(model, 'gradient_checkpointing_enable'):
+                model.gradient_checkpointing_enable()
+                print("  Gradient checkpointing enabled")
+            if use_fp16:
+                model = model.half()
+                print("  Model converted to FP16")
+            model = model.to('cuda')
         
         # Update model with computed weights
         number_update = 0
@@ -945,11 +1016,15 @@ def update_param_plus(
             for name, param in model.named_parameters():
                 if name[:-7] in tar_lora_list.keys():
                     lora_matrix = tar_lora_list[name[:-7]].to('cuda')
+                    # Convert lora_matrix to match param dtype (for FP16 compatibility)
+                    if param.dtype != lora_matrix.dtype:
+                        lora_matrix = lora_matrix.to(param.dtype)
                     if with_pretrain_matrix == 0:
                         param.copy_(lora_matrix + param)
                     elif with_pretrain_matrix == 1:
                         param.copy_(lora_matrix)
                     number_update += 1
+                    del lora_matrix  # Clean up immediately
         
         if number_update == len(tar_lora_list.keys()):
             print("All LoRA targets updated successfully!")
@@ -1260,6 +1335,11 @@ def main():
     use_camr = config_data[task_type].get('use_camr', True)
     use_dcs = config_data[task_type].get('use_dcs', True)
     
+    # Get memory optimization parameters
+    use_fp16 = config_data[task_type].get('use_fp16', False)
+    use_gradient_checkpointing = config_data[task_type].get('use_gradient_checkpointing', False)
+    sequential_layer_processing = config_data[task_type].get('sequential_layer_processing', False)
+    
     # Command line overrides
     if args.use_mats is not None:
         use_mats = bool(args.use_mats)
@@ -1301,6 +1381,10 @@ def main():
         use_dcs=use_dcs,
         dcs_sigma=float(config_data[task_type].get('dcs_sigma', 1.0)),
         convergence_threshold=float(config_data[task_type].get('convergence_threshold', 1e-6)),
+        # Memory optimization parameters
+        use_fp16=use_fp16,
+        use_gradient_checkpointing=use_gradient_checkpointing,
+        sequential_layer_processing=sequential_layer_processing,
     )
     
     if save == 1:
