@@ -1487,8 +1487,15 @@ def main():
                 results_str = result_match.group(1)
                 # Use eval() with a safe namespace to handle nan, inf, -inf values
                 # ast.literal_eval cannot parse nan/inf, so we use eval with restricted globals
-                # Only allow safe builtins: float, int, str, True, False, None
-                safe_dict = {'nan': float('nan'), 'inf': float('inf'), '__builtins__': {}}
+                # Allow common Python literals and float special values
+                safe_dict = {
+                    'nan': float('nan'), 
+                    'inf': float('inf'),
+                    'True': True,
+                    'False': False,
+                    'None': None,
+                    '__builtins__': {}
+                }
                 results = eval(results_str, safe_dict)
                 
                 # Format results based on task type
