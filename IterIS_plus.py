@@ -1455,6 +1455,17 @@ def main():
     print(f"Running evaluation and saving results to: {output_file}")
     print(f"{'='*80}\n")
     
+    # Safe namespace for eval() to handle nan, inf, True, False, None in results
+    # ast.literal_eval cannot parse nan/inf, so we use eval with restricted globals
+    safe_dict = {
+        'nan': float('nan'),
+        'inf': float('inf'),
+        'True': True,
+        'False': False,
+        'None': None,
+        '__builtins__': {}
+    }
+    
     for task_name in task_targets:
         print(f"\n--- Evaluating {task_name} ---")
         
@@ -1485,17 +1496,7 @@ def main():
             result_match = re.search(r"Eval results[-]*\s*\n\s*(\{.*?\})", captured, re.DOTALL)
             if result_match:
                 results_str = result_match.group(1)
-                # Use eval() with a safe namespace to handle nan, inf, -inf values
-                # ast.literal_eval cannot parse nan/inf, so we use eval with restricted globals
-                # Allow common Python literals and float special values
-                safe_dict = {
-                    'nan': float('nan'), 
-                    'inf': float('inf'),
-                    'True': True,
-                    'False': False,
-                    'None': None,
-                    '__builtins__': {}
-                }
+                # Use eval() with safe_dict to handle nan, inf, -inf values
                 results = eval(results_str, safe_dict)
                 
                 # Format results based on task type
