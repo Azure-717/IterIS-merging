@@ -1194,14 +1194,30 @@ def format_emotion_results(task_name, results):
     lines.append(f"Task: {task_name}")
     lines.append("-" * 80)
     
+    # Handle both direct keys and eval_ prefixed keys from trainer.evaluate()
     if 'f1' in results:
         lines.append(f"  F1 Score:      {results['f1']:.4f}")
+    elif 'eval_f1' in results:
+        lines.append(f"  F1 Score:      {results['eval_f1']:.4f}")
+    elif 'eval_f1-score' in results:
+        lines.append(f"  F1 Score:      {results['eval_f1-score']:.4f}")
+        
     if 'acc' in results:
         lines.append(f"  Accuracy:      {results['acc']:.4f}")
+    elif 'eval_accuracy' in results:
+        lines.append(f"  Accuracy:      {results['eval_accuracy']:.4f}")
+    elif 'eval_acc' in results:
+        lines.append(f"  Accuracy:      {results['eval_acc']:.4f}")
+        
     if 'precision' in results:
         lines.append(f"  Precision:     {results['precision']:.4f}")
+    elif 'eval_precision' in results:
+        lines.append(f"  Precision:     {results['eval_precision']:.4f}")
+        
     if 'recall' in results:
         lines.append(f"  Recall:        {results['recall']:.4f}")
+    elif 'eval_recall' in results:
+        lines.append(f"  Recall:        {results['eval_recall']:.4f}")
     
     lines.append("")
     return "\n".join(lines)
