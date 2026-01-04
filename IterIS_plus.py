@@ -13,6 +13,7 @@ import os
 import gc
 import re
 import sys
+import ast
 import yaml
 import time
 import torch
@@ -1158,15 +1159,31 @@ def format_glue_results(task_name, results):
     lines.append(f"Task: {task_name.upper()}")
     lines.append("-" * 80)
     
-    # 根据任务类型显示相应的指标
+    # Handle both direct keys and eval_ prefixed keys from trainer.evaluate()
+    # Display metrics based on task type
     if 'acc' in results:
         lines.append(f"  Accuracy:      {results['acc']:.4f}")
+    elif 'eval_accuracy' in results:
+        lines.append(f"  Accuracy:      {results['eval_accuracy']:.4f}")
+        
     if 'f1' in results:
         lines.append(f"  F1 Score:      {results['f1']:.4f}")
+    elif 'eval_f1-score' in results:
+        lines.append(f"  F1 Score:      {results['eval_f1-score']:.4f}")
+    elif 'eval_f1' in results:
+        lines.append(f"  F1 Score:      {results['eval_f1']:.4f}")
+        
     if 'mcc' in results:
         lines.append(f"  Matthews Corr: {results['mcc']:.4f}")
+    elif 'eval_MCC' in results:
+        lines.append(f"  Matthews Corr: {results['eval_MCC']:.4f}")
+    elif 'eval_mcc' in results:
+        lines.append(f"  Matthews Corr: {results['eval_mcc']:.4f}")
+        
     if 'acc_and_f1' in results:
         lines.append(f"  Acc & F1:      {results['acc_and_f1']:.4f}")
+    elif 'eval_acc_and_f1' in results:
+        lines.append(f"  Acc & F1:      {results['eval_acc_and_f1']:.4f}")
     
     lines.append("")
     return "\n".join(lines)
@@ -1178,14 +1195,30 @@ def format_emotion_results(task_name, results):
     lines.append(f"Task: {task_name}")
     lines.append("-" * 80)
     
+    # Handle both direct keys and eval_ prefixed keys from trainer.evaluate()
     if 'f1' in results:
         lines.append(f"  F1 Score:      {results['f1']:.4f}")
+    elif 'eval_f1-score' in results:
+        lines.append(f"  F1 Score:      {results['eval_f1-score']:.4f}")
+    elif 'eval_f1' in results:
+        lines.append(f"  F1 Score:      {results['eval_f1']:.4f}")
+        
     if 'acc' in results:
         lines.append(f"  Accuracy:      {results['acc']:.4f}")
+    elif 'eval_accuracy' in results:
+        lines.append(f"  Accuracy:      {results['eval_accuracy']:.4f}")
+    elif 'eval_acc' in results:
+        lines.append(f"  Accuracy:      {results['eval_acc']:.4f}")
+        
     if 'precision' in results:
         lines.append(f"  Precision:     {results['precision']:.4f}")
+    elif 'eval_precision' in results:
+        lines.append(f"  Precision:     {results['eval_precision']:.4f}")
+        
     if 'recall' in results:
         lines.append(f"  Recall:        {results['recall']:.4f}")
+    elif 'eval_recall' in results:
+        lines.append(f"  Recall:        {results['eval_recall']:.4f}")
     
     lines.append("")
     return "\n".join(lines)
@@ -1354,10 +1387,12 @@ def main():
         # Parse results from captured output
         try:
             # Extract the results dictionary
-            result_match = re.search(r"Eval results[-]*\n({.*?})", captured, re.DOTALL)
+            # Pattern matches: "------------{task_name}, {model_name} Eval results------------\n{...}"
+            result_match = re.search(r"Eval results[-]*\s*\n\s*(\{.*?\})", captured, re.DOTALL)
             if result_match:
                 results_str = result_match.group(1)
-                results = eval(results_str)
+                # Use ast.literal_eval for safe parsing instead of eval()
+                results = ast.literal_eval(results_str)
                 
                 # Format results based on task type
                 if task_type == "TASKS_blip_base":
