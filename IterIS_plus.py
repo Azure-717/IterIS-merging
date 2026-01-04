@@ -13,6 +13,7 @@ import os
 import gc
 import re
 import sys
+import ast
 import yaml
 import time
 import torch
@@ -1390,7 +1391,8 @@ def main():
             result_match = re.search(r"Eval results[-]*\s*\n\s*(\{.*?\})", captured, re.DOTALL)
             if result_match:
                 results_str = result_match.group(1)
-                results = eval(results_str)
+                # Use ast.literal_eval for safe parsing instead of eval()
+                results = ast.literal_eval(results_str)
                 
                 # Format results based on task type
                 if task_type == "TASKS_blip_base":
