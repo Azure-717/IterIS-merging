@@ -1198,10 +1198,10 @@ def format_emotion_results(task_name, results):
     # Handle both direct keys and eval_ prefixed keys from trainer.evaluate()
     if 'f1' in results:
         lines.append(f"  F1 Score:      {results['f1']:.4f}")
-    elif 'eval_f1' in results:
-        lines.append(f"  F1 Score:      {results['eval_f1']:.4f}")
     elif 'eval_f1-score' in results:
         lines.append(f"  F1 Score:      {results['eval_f1-score']:.4f}")
+    elif 'eval_f1' in results:
+        lines.append(f"  F1 Score:      {results['eval_f1']:.4f}")
         
     if 'acc' in results:
         lines.append(f"  Accuracy:      {results['acc']:.4f}")
