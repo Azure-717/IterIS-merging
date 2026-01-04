@@ -372,7 +372,8 @@ def compute_output_variance(W_list, X_list):
             X_task = X_list[task_idx]  # [batch, seq_len, features]
             
             # Flatten sequence dimension: [batch * seq_len, features]
-            X_flat = X_task.reshape(-1, feature_dim)  # [batch*seq_len, features]
+            # Use contiguous + view for better performance than reshape
+            X_flat = X_task.contiguous().view(-1, feature_dim)  # [batch*seq_len, features]
             
             # Apply ALL LoRAs to this task's samples
             # W_list: [N, out_dim, in_dim], X_flat: [batch*seq_len, features]
