@@ -165,7 +165,11 @@ class AndersonAccelerator:
             return G_W_current
         
         # SAFETY FIX: Clamp gamma coefficients to prevent runaway acceleration
-        # When gamma values are too large, the acceleration can overshoot and diverge
+        # When gamma values are too large, the acceleration can overshoot and diverge.
+        # The bounds [-2.0, 2.0] are chosen empirically:
+        # - In stable Anderson acceleration, gamma values typically stay in [-1, 1]
+        # - Values > 2 indicate the acceleration is extrapolating too aggressively
+        # - This conservative bound prevents divergence while allowing reasonable acceleration
         gamma = torch.clamp(gamma, -2.0, 2.0)
         
         # Compute the accelerated iterate
@@ -176,9 +180,12 @@ class AndersonAccelerator:
             W_accelerated = W_accelerated - gamma[j] * delta_G
         
         # SAFETY FIX: Check if acceleration caused excessive deviation
-        # If the accelerated weights deviate too much from the LS solution, fall back
+        # If the accelerated weights deviate too much from the LS solution, fall back.
+        # The 200% threshold is based on the principle that Anderson acceleration should
+        # improve convergence, not cause wild jumps. A relative change > 2.0 indicates
+        # the acceleration is moving in an unproductive direction.
         relative_change = torch.norm(W_accelerated - G_W_current) / (torch.norm(G_W_current) + 1e-10)
-        if relative_change > 2.0:  # If change exceeds 200%, acceleration is unstable
+        if relative_change > 2.0:
             return G_W_current
         
         return W_accelerated
@@ -229,10 +236,16 @@ def compute_camr_regularization(X_tilde_list, alpha, beta=1e-8, sample_weights=N
                 X_weighted = X_reshaped * sqrt_weights
                 X_tilde_list = X_weighted.view(X_tilde_list.shape[0], -1, feature_dim)
             elif X_tilde_list.dim() < 3:
-                # Not enough dimensions for sample weighting
+                # Not enough dimensions for sample weighting - this can happen when
+                # input is already 2D [batch, features]. Safe to skip as features
+                # aren't structured for per-sample weighting in this case.
                 pass
             else:
-                # Dimension mismatch - skip sample weighting for CAMR silently
+                # Dimension mismatch between sample_weights and flattened features.
+                # This can occur when X_tilde_list.shape[1] is not evenly divisible by
+                # batch_size, often due to sequence length variations. The DCS weights
+                # are still applied in solution_matrix_plus directly to the matrices,
+                # so skipping here is safe and won't affect the core weighting logic.
                 pass
         
         # Compute covariance of activations: C = X^T X

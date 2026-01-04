@@ -38,7 +38,7 @@ GLUE_t5:
   mats_history_size: 3     # FIXED: Reduced from 5 to 3 for more stable acceleration
   mats_regularization: 1e-5  # FIXED: Increased from 1e-6 for more stable acceleration
   use_camr: True           # Enable CAMR (Curvature-Aware Regularization)
-  camr_alpha: 0.0000001    # Should match alpha_2 (now properly scaled by norm internally)
+  camr_alpha: 0.0000001    # Should match alpha_2 above (0.0000001). Internally scaled by cov_norm.
   camr_beta: 1e-6          # FIXED: Increased from 1e-8 to ensure minimum regularization
   use_dcs: True            # Enable DCS (Dynamic Sample Weighting)
   dcs_sigma: 0.5           # FIXED: Reduced from 1.0 for more sensitive weight distribution
