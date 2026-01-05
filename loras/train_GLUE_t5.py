@@ -181,14 +181,49 @@ def preprocess_function(examples, task_name, tokenizer, max_length):
 
 # Calculate accuracy, f1-score and loss
 def compute_metrics(eval_pred):
+    """
+    Compute metrics for T5 generation tasks.
+    
+    CRITICAL FIX: When predict_with_generate=True, the predictions are generated
+    token sequences, not logits. We must decode them to strings and compare.
+    
+    Previous bug: Used preds[:, 1] and labels[:, 0] which assumes a specific
+    logit format that doesn't exist with generation.
+    """
     preds, labels = eval_pred
     tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-base")
+    
+    # Handle tuple format (happens when model returns loss + logits)
+    if isinstance(preds, tuple):
+        preds = preds[0]
+    
+    # Replace -100 in labels with pad_token_id for decoding
+    # -100 is used to mask padding in loss computation
     labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
-    labels = labels[:, 0]
-    preds = preds[:, 1]
-    accuracy = (preds == labels).mean()
-    f1 = f1_score(labels, preds, average='weighted') 
-    MCC = matthews_corrcoef(labels, preds)
+    
+    # Decode predictions and labels to strings
+    decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
+    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+    
+    # Normalize: strip whitespace and convert to lowercase for robust comparison
+    decoded_preds = [pred.strip().lower() for pred in decoded_preds]
+    decoded_labels = [label.strip().lower() for label in decoded_labels]
+    
+    # Compute accuracy: exact string match
+    accuracy = sum([1 if p == l else 0 for p, l in zip(decoded_preds, decoded_labels)]) / len(decoded_preds)
+    
+    # Compute F1 score: weighted average (better for imbalanced GLUE tasks)
+    # zero_division=0 prevents warnings when a class has no predictions
+    f1 = f1_score(decoded_labels, decoded_preds, average='weighted', zero_division=0)
+    
+    # Compute Matthews Correlation Coefficient
+    # For multi-class, we need to handle it properly
+    try:
+        MCC = matthews_corrcoef(decoded_labels, decoded_preds)
+    except:
+        # If MCC computation fails (e.g., single class), set to 0
+        MCC = 0.0
+    
     return {
         "accuracy": accuracy,
         "f1-score": f1,
